@@ -1,6 +1,6 @@
 {
   "title": "Queue Depths and Processing Rate",
-  "uid": "cheesepay-queue-depth",
+  "uid": "settliq-queue-depth",
   "schemaVersion": 38,
   "version": 1,
   "refresh": "15s",
@@ -13,7 +13,7 @@
       "gridPos": { "x": 0, "y": 0, "w": 16, "h": 8 },
       "targets": [
         {
-          "expr": "cheesepay_queue_depth",
+          "expr": "settliq_queue_depth",
           "legendFormat": "{{queue}}",
           "refId": "A"
         }
@@ -44,7 +44,7 @@
       "gridPos": { "x": 16, "y": 0, "w": 8, "h": 8 },
       "targets": [
         {
-          "expr": "sum(rate(cheesepay_queue_processed_total[1m])) by (queue)",
+          "expr": "sum(rate(settliq_queue_processed_total[1m])) by (queue)",
           "legendFormat": "{{queue}}",
           "refId": "A"
         }
@@ -58,7 +58,7 @@
       "gridPos": { "x": 0, "y": 8, "w": 12, "h": 6 },
       "targets": [
         {
-          "expr": "cheesepay_queue_depth",
+          "expr": "settliq_queue_depth",
           "legendFormat": "{{queue}}",
           "refId": "A"
         }
@@ -84,7 +84,7 @@
       "gridPos": { "x": 12, "y": 8, "w": 12, "h": 6 },
       "targets": [
         {
-          "expr": "sum(increase(cheesepay_queue_failed_total[1h])) by (queue)",
+          "expr": "sum(increase(settliq_queue_failed_total[1h])) by (queue)",
           "legendFormat": "{{queue}}",
           "refId": "A"
         }

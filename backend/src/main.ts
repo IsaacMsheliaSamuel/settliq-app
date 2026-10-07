@@ -10,7 +10,7 @@ async function bootstrap() {
   app.useGlobalInterceptors(new ClassSerializerInterceptor(app.get(Reflector)));
 
   const config = new DocumentBuilder()
-    .setTitle('DupDapp API')
+    .setTitle('Settliq API')
     .setDescription('Merchant registration, API key auth, waitlist export & GDPR')
     .setVersion('1.0')
     .addBearerAuth()

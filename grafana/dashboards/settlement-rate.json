@@ -1,6 +1,6 @@
 {
   "title": "Settlement Success/Failure Rate",
-  "uid": "cheesepay-settlement-rate",
+  "uid": "settliq-settlement-rate",
   "schemaVersion": 38,
   "version": 1,
   "refresh": "30s",
@@ -13,7 +13,7 @@
       "gridPos": { "x": 0, "y": 0, "w": 8, "h": 8 },
       "targets": [
         {
-          "expr": "sum(rate(cheesepay_settlements_total{status='completed'}[5m])) / sum(rate(cheesepay_settlements_total[5m])) * 100",
+          "expr": "sum(rate(settliq_settlements_total{status='completed'}[5m])) / sum(rate(settliq_settlements_total[5m])) * 100",
           "refId": "A"
         }
       ],
@@ -55,7 +55,7 @@
       "gridPos": { "x": 8, "y": 0, "w": 16, "h": 8 },
       "targets": [
         {
-          "expr": "sum(rate(cheesepay_settlements_total[5m])) by (status)",
+          "expr": "sum(rate(settliq_settlements_total[5m])) by (status)",
           "legendFormat": "{{status}}",
           "refId": "A"
         }
@@ -71,7 +71,7 @@
       "gridPos": { "x": 0, "y": 8, "w": 6, "h": 4 },
       "targets": [
         {
-          "expr": "sum(increase(cheesepay_settlements_total{status='failed'}[1h]))",
+          "expr": "sum(increase(settliq_settlements_total{status='failed'}[1h]))",
           "refId": "A"
         }
       ],

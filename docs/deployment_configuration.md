@@ -49,7 +49,7 @@ Two constructors take container types, which the Stellar CLI expects as JSON.
 ```
 
 `…_FEE_TIERS` — `Vec<FeeTier>`. Field names must match the struct in
-`dabdub_contracts/contracts/fee_calculator/src/lib.rs`:
+`settliq_contracts/contracts/fee_calculator/src/lib.rs`:
 
 ```json
 [
@@ -76,5 +76,5 @@ exposed as job outputs named `<contract>_id`.
 
 - [`escrow_upgrade_procedure.md`](escrow_upgrade_procedure.md) — upgrading
   `payment_escrow` in place.
-- [`../dabdub_contracts/contracts/payment_escrow/EMERGENCY_RUNBOOK.md`](../dabdub_contracts/contracts/payment_escrow/EMERGENCY_RUNBOOK.md)
+- [`../settliq_contracts/contracts/payment_escrow/EMERGENCY_RUNBOOK.md`](../settliq_contracts/contracts/payment_escrow/EMERGENCY_RUNBOOK.md)
   — incident response, including rollback.

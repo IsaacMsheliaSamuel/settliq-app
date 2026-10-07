@@ -1,6 +1,6 @@
 {
   "title": "API Latency (p95 per Endpoint)",
-  "uid": "cheesepay-api-latency",
+  "uid": "settliq-api-latency",
   "schemaVersion": 38,
   "version": 1,
   "refresh": "30s",

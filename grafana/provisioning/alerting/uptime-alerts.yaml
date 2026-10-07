@@ -5,12 +5,12 @@ apiVersion: 1
 # environment variable substitution if your Grafana version supports it.
 contactPoints:
   - orgId: 1
-    name: CheesePay On-Call
+    name: Settliq On-Call
     receivers:
       - uid: "oncall-email"
         type: email
         settings:
-          addresses: "oncall@cheesepay.xyz"
+          addresses: "oncall@settliq.xyz"
           singleEmail: false
         disableResolveMessage: false
 
@@ -20,7 +20,7 @@ contactPoints:
           url: "${GRAFANA_SLACK_WEBHOOK_URL}"
           channel: "#alerts"
           title: |
-            {{ if eq .Status "firing" }}🔴 CheesePay Alert{{ else }}✅ CheesePay Resolved{{ end }}
+            {{ if eq .Status "firing" }}🔴 Settliq Alert{{ else }}✅ Settliq Resolved{{ end }}
           text: |
             {{ range .Alerts }}
             *{{ .Annotations.summary }}*
@@ -31,13 +31,13 @@ contactPoints:
 # ─── Notification Policies ────────────────────────────────────────────────────
 policies:
   - orgId: 1
-    receiver: CheesePay On-Call
+    receiver: Settliq On-Call
     group_by: ["alertname", "severity"]
     group_wait: 30s
     group_interval: 5m
     repeat_interval: 1h
     routes:
-      - receiver: CheesePay On-Call
+      - receiver: Settliq On-Call
         matchers:
           - severity = critical
         group_wait: 0s          # fire immediately for critical
@@ -71,7 +71,7 @@ rules:
         annotations:
           summary: "High API error rate detected"
           description: "More than 5 errors/min for 2 consecutive minutes. Value: {{ $values.A.Value | printf \"%.1f\" }} errors/min. Check logs immediately."
-          runbook_url: "https://github.com/cheesepay/dabdub/blob/main/monitoring/README.md"
+          runbook_url: "https://github.com/settliq/settliq/blob/main/monitoring/README.md"
         labels:
           severity: "critical"
           component: "api"
@@ -97,7 +97,7 @@ rules:
         annotations:
           summary: "Health endpoint is returning errors"
           description: "The /health or /health/ready endpoint has logged errors in the last 2 minutes. This may indicate DB or Stellar connectivity issues."
-          runbook_url: "https://github.com/cheesepay/dabdub/blob/main/monitoring/README.md"
+          runbook_url: "https://github.com/settliq/settliq/blob/main/monitoring/README.md"
         labels:
           severity: "critical"
           component: "health"
@@ -123,7 +123,7 @@ rules:
         annotations:
           summary: "No API logs for 5 minutes — process may be down"
           description: "The backend has emitted zero log lines in the last 5 minutes. This strongly suggests the process has crashed or the log pipeline is broken."
-          runbook_url: "https://github.com/cheesepay/dabdub/blob/main/monitoring/README.md"
+          runbook_url: "https://github.com/settliq/settliq/blob/main/monitoring/README.md"
         labels:
           severity: "critical"
           component: "api"
@@ -148,7 +148,7 @@ rules:
         annotations:
           summary: "Queue processing has stalled"
           description: "A Bull queue has stopped processing jobs. Settlement or webhook delivery may be delayed."
-          runbook_url: "https://github.com/cheesepay/dabdub/blob/main/monitoring/README.md"
+          runbook_url: "https://github.com/settliq/settliq/blob/main/monitoring/README.md"
         labels:
           severity: "warning"
           component: "queue"
@@ -173,7 +173,7 @@ rules:
         annotations:
           summary: "Stellar Horizon connectivity issues"
           description: "Multiple Stellar-related errors in the last 2 minutes. Blockchain settlement may be impacted."
-          runbook_url: "https://github.com/cheesepay/dabdub/blob/main/monitoring/README.md"
+          runbook_url: "https://github.com/settliq/settliq/blob/main/monitoring/README.md"
         labels:
           severity: "critical"
           component: "stellar"

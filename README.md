@@ -1,19 +1,17 @@
-# DupDub Stellar Contracts
+# Settliq Stellar Contracts
 
-> Soroban smart contracts powering the DupDub crypto-to-fiat settlement platform on Stellar.
+> Soroban smart contracts powering the Settliq crypto-to-fiat settlement platform on Stellar.
 
 ## Overview
 
-This repository contains the Soroban (Stellar smart contract platform) contracts that back DupDub's on-chain settlement flow — payment escrow, merchant registry, fee handling, and related infrastructure. It does **not** contain the backend API or frontend application; those live in their own repositories:
+This repository contains the Soroban (Stellar smart contract platform) contracts that back Settliq's on-chain settlement flow — payment escrow, merchant registry, fee handling, and related infrastructure. It does **not** contain the backend API or frontend application; those live in their own repositories:
 
-- **Backend (Settlement API)** — `dupdap-backend`
-- **Frontend (Merchant & Customer Portal)** — `dupdap-frontend`
-
-API work tracked in this repository is implemented in the backend; see [the backend API implementation note](docs/backend-api-implementation.md).
+- **Backend (Settlement API)** — `settliq-backend`
+- **Frontend (Merchant & Customer Portal)** — `settliq-frontend`
 
 ## Contracts
 
-All contracts live under [`dupdapp_contract/contracts/`](dupdapp_contract/contracts/):
+All contracts live under [`settliq_contracts/contracts/`](settliq_contracts/contracts/):
 
 | Contract | Purpose |
 |---|---|
@@ -53,10 +51,10 @@ make check-wasm-size    # enforce the 64 KB per-contract WASM limit
 make test               # cargo test across the workspace
 ```
 
-Or directly with cargo, from `dupdapp_contract/`:
+Or directly with cargo, from `settliq_contracts/`:
 
 ```bash
-cd dupdapp_contract
+cd settliq_contracts
 cargo build --target wasm32v1-none --release
 cargo test
 ```
@@ -68,7 +66,7 @@ cargo test
 
 ## Monitoring
 
-Grafana/Loki/Promtail configs under [`grafana/`](grafana/) and [`docker-compose.yml`](docker-compose.yml) are provided for local observability tooling; see [`monitoring/`](monitoring/) for uptime/status-page setup.
+Grafana/Loki/Promtail configs under [`grafana/`](grafana/) and [`docker-compose.yml`](docker-compose.yml) are provided for local observability tooling.
 
 ## Docs
 
@@ -77,10 +75,5 @@ Grafana/Loki/Promtail configs under [`grafana/`](grafana/) and [`docker-compose.
 
 ## Links
 
-- **Website**: [https://dupdub.xyz](https://dupdub.xyz)
-- **Documentation**: [https://docs.dupdub.xyz](https://docs.dupdub.xyz)
-
-## Handsoff notes
-
-<!-- handsoff-issue-1094 -->
-- #1094: merchant_registry and payment_escrow: a merchant suspended after deposit is still paid out by release/release_partial
+- **Website**: [https://settliq.xyz](https://settliq.xyz)
+- **Documentation**: [https://docs.settliq.xyz](https://docs.settliq.xyz)

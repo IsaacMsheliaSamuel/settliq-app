@@ -1,6 +1,6 @@
 {
   "title": "Payment Volume",
-  "uid": "cheesepay-payment-volume",
+  "uid": "settliq-payment-volume",
   "schemaVersion": 38,
   "version": 1,
   "refresh": "30s",
@@ -13,7 +13,7 @@
       "gridPos": { "x": 0, "y": 0, "w": 24, "h": 8 },
       "targets": [
         {
-          "expr": "sum(rate(cheesepay_payments_total[5m])) by (status)",
+          "expr": "sum(rate(settliq_payments_total[5m])) by (status)",
           "legendFormat": "{{status}}",
           "refId": "A"
         }
@@ -44,7 +44,7 @@
       "gridPos": { "x": 0, "y": 8, "w": 6, "h": 4 },
       "targets": [
         {
-          "expr": "sum(increase(cheesepay_payments_total[24h]))",
+          "expr": "sum(increase(settliq_payments_total[24h]))",
           "refId": "A"
         }
       ],
@@ -57,7 +57,7 @@
       "gridPos": { "x": 6, "y": 8, "w": 6, "h": 4 },
       "targets": [
         {
-          "expr": "sum(increase(cheesepay_payment_volume_usd_total[24h]))",
+          "expr": "sum(increase(settliq_payment_volume_usd_total[24h]))",
           "refId": "A"
         }
       ],

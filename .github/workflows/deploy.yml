@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: dabdub_contracts
+        working-directory: settliq_contracts
     outputs:
       wasm-artifact: wasm-contracts-${{ github.sha }}
     steps:
@@ -63,7 +63,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wasm-contracts-${{ github.sha }}
-          path: dabdub_contracts/target/wasm32v1-none/release/*.wasm
+          path: settliq_contracts/target/wasm32v1-none/release/*.wasm
           retention-days: 30
 
   # -----------------------------------------------------------------------
@@ -599,6 +599,6 @@ jobs:
           Previous WASM artifacts are retained for 30 days in GitHub Actions.
 
           See docs/escrow_upgrade_procedure.md and
-          dabdub_contracts/contracts/payment_escrow/EMERGENCY_RUNBOOK.md.
+          settliq_contracts/contracts/payment_escrow/EMERGENCY_RUNBOOK.md.
           ==========================================================================
           ROLLBACK

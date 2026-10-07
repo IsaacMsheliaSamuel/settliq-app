@@ -1,16 +1,16 @@
 /**
- * Cloudflare Worker — status.cheesepay.xyz
+ * Cloudflare Worker — status.settliq.xyz
  *
  * Routes:
  *   GET /          → serves the status page HTML (with API_BASE injected)
- *   GET /api/status → proxies GET https://api.cheesepay.xyz/health/admin
+ *   GET /api/status → proxies GET https://api.settliq.xyz/health/admin
  *                     (avoids CORS issues; adds cache-control)
  *
  * Deploy:
  *   wrangler deploy
  *
  * Environment variables (set in wrangler.toml or Cloudflare dashboard):
- *   API_ORIGIN  = https://api.cheesepay.xyz   (no trailing slash)
+ *   API_ORIGIN  = https://api.settliq.xyz   (no trailing slash)
  */
 
 // ─── HTML is inlined at build time via wrangler's text_blobs or fetched ───────
@@ -45,7 +45,7 @@ export default {
 
 // ─── Proxy /health/admin ──────────────────────────────────────────────────────
 async function proxyHealthAdmin(env) {
-  const apiOrigin = env.API_ORIGIN ?? 'https://api.cheesepay.xyz';
+  const apiOrigin = env.API_ORIGIN ?? 'https://api.settliq.xyz';
 
   let upstreamRes;
   try {
@@ -99,7 +99,7 @@ async function serveStatusPage(env) {
   // Inject the API base so the page calls /api/status (this worker's proxy)
   // instead of the real API directly — avoids CORS entirely.
   const injected = html.replace(
-    "window.__API_BASE__ || 'https://api.cheesepay.xyz'",
+    "window.__API_BASE__ || 'https://api.settliq.xyz'",
     "window.__API_BASE__ || ''",  // empty string → relative URL /api/status
   ).replace(
     "`${API_BASE}/health/admin`",
