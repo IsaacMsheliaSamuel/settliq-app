@@ -528,7 +528,9 @@ fn test_resolve_dispute_to_customer() {
 
     let payment = client.get_payment(&payment_id);
     assert_eq!(payment.status, PaymentStatus::Expired);
-    assert_eq!(payment.released_amount, 250_000_000);
+    // Customer wins: no funds were ever released to the merchant, so
+    // released_amount remains 0 (issue #51 fix).
+    assert_eq!(payment.released_amount, 0);
 
     let token_client = token::Client::new(&env, &usdc);
     assert_eq!(token_client.balance(&customer), 1_000_000_000);
@@ -728,11 +730,11 @@ fn test_emergency_drain_cooldown_prevents_repeated_drain() {
     let (
         env,
         client,
-        _contract_id,
-        _admin,
+        contract_id,
+        admin,
         customer,
         merchant,
-        _usdc,
+        usdc,
         _xlm,
         emergency_signer_one,
         emergency_signer_two,
@@ -748,8 +750,16 @@ fn test_emergency_drain_cooldown_prevents_repeated_drain() {
         &emergency_signer_two,
     );
 
+    // The drain paused the contract.  Resume it and re-fund so we can deposit
+    // a second payment, then attempt a second drain — which must be blocked by
+    // the cooldown, not the pause.
+    token::StellarAssetClient::new(&env, &usdc).mint(&contract_id, &100_000_000i128);
+    client.resume(&admin, &emergency_signer_one, &emergency_signer_two);
+
     let payment_id_b = make_id(&env, 54);
     deposit_default_ttl(&client, &customer, &payment_id_b, &merchant, 100_000_000i128);
+    // This second drain attempt must panic with the cooldown message because
+    // the cooldown period has not yet elapsed.
     client.emergency_drain(
         &emergency_signer_one,
         &emergency_signer_one,
@@ -781,7 +791,10 @@ fn test_dispute_after_partial_release_resolves_to_customer() {
 
     let payment = client.get_payment(&payment_id);
     assert_eq!(payment.status, PaymentStatus::Expired);
-    assert_eq!(payment.released_amount, 250_000_000);
+    // Customer wins the dispute over the remaining 150M. The 100M already
+    // released to the merchant is not clawed back, so released_amount stays
+    // at 100M (issue #51 fix).
+    assert_eq!(payment.released_amount, 100_000_000);
 
     let token_client = token::Client::new(&env, &usdc);
     assert_eq!(token_client.balance(&customer), 900_000_000);
@@ -819,4 +832,237 @@ fn test_dispute_after_partial_release_resolves_to_merchant() {
     assert_eq!(token_client.balance(&customer), 750_000_000);
     assert_eq!(token_client.balance(&merchant), 250_000_000);
     assert_eq!(token_client.balance(&contract_id), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Emergency drain pause behaviour (#52)
+// After emergency_drain the contract must be paused; deposit, release,
+// release_partial, refund and dispute must all reject with a descriptive
+// error message.  resume() should restore normal operations.
+// ---------------------------------------------------------------------------
+
+#[test]
+#[should_panic(expected = "Contract paused due to emergency drain")]
+fn test_deposit_blocked_while_paused() {
+    let (
+        env,
+        client,
+        _contract_id,
+        _admin,
+        customer,
+        merchant,
+        _usdc,
+        _xlm,
+        emergency_signer_one,
+        emergency_signer_two,
+        _emergency_signer_three,
+        _emergency_treasury,
+    ) = setup_env();
+
+    let payment_id_a = make_id(&env, 60);
+    deposit_default_ttl(&client, &customer, &payment_id_a, &merchant, 50_000_000i128);
+    client.emergency_drain(
+        &emergency_signer_one,
+        &emergency_signer_one,
+        &emergency_signer_two,
+    );
+
+    // deposit must panic after drain
+    let payment_id_b = make_id(&env, 61);
+    deposit_default_ttl(&client, &customer, &payment_id_b, &merchant, 50_000_000i128);
+}
+
+#[test]
+#[should_panic(expected = "Contract paused due to emergency drain")]
+fn test_release_blocked_while_paused() {
+    let (
+        env,
+        client,
+        _contract_id,
+        admin,
+        customer,
+        merchant,
+        _usdc,
+        _xlm,
+        emergency_signer_one,
+        emergency_signer_two,
+        _emergency_signer_three,
+        _emergency_treasury,
+    ) = setup_env();
+
+    let payment_id = make_id(&env, 62);
+    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
+    client.emergency_drain(
+        &emergency_signer_one,
+        &emergency_signer_one,
+        &emergency_signer_two,
+    );
+
+    client.release(&admin, &payment_id);
+}
+
+#[test]
+#[should_panic(expected = "Contract paused due to emergency drain")]
+fn test_release_partial_blocked_while_paused() {
+    let (
+        env,
+        client,
+        _contract_id,
+        admin,
+        customer,
+        merchant,
+        _usdc,
+        _xlm,
+        emergency_signer_one,
+        emergency_signer_two,
+        _emergency_signer_three,
+        _emergency_treasury,
+    ) = setup_env();
+
+    let payment_id = make_id(&env, 63);
+    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
+    client.emergency_drain(
+        &emergency_signer_one,
+        &emergency_signer_one,
+        &emergency_signer_two,
+    );
+
+    client.release_partial(&admin, &payment_id, &100_000_000i128);
+}
+
+#[test]
+#[should_panic(expected = "Contract paused due to emergency drain")]
+fn test_refund_blocked_while_paused() {
+    let (
+        env,
+        client,
+        _contract_id,
+        _admin,
+        customer,
+        merchant,
+        _usdc,
+        _xlm,
+        emergency_signer_one,
+        emergency_signer_two,
+        _emergency_signer_three,
+        _emergency_treasury,
+    ) = setup_env();
+
+    let payment_id = make_id(&env, 64);
+    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
+    client.emergency_drain(
+        &emergency_signer_one,
+        &emergency_signer_one,
+        &emergency_signer_two,
+    );
+
+    // advance past expiry so refund would otherwise be valid
+    env.ledger().set_sequence_number(111);
+    client.refund(&payment_id);
+}
+
+#[test]
+#[should_panic(expected = "Contract paused due to emergency drain")]
+fn test_dispute_blocked_while_paused() {
+    let (
+        env,
+        client,
+        _contract_id,
+        _admin,
+        customer,
+        merchant,
+        _usdc,
+        _xlm,
+        emergency_signer_one,
+        emergency_signer_two,
+        _emergency_signer_three,
+        _emergency_treasury,
+    ) = setup_env();
+
+    let payment_id = make_id(&env, 65);
+    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
+    client.emergency_drain(
+        &emergency_signer_one,
+        &emergency_signer_one,
+        &emergency_signer_two,
+    );
+
+    client.dispute(&customer, &payment_id, &String::from_str(&env, "blocked"));
+}
+
+#[test]
+fn test_emergency_drain_sets_paused_flag() {
+    let (
+        env,
+        client,
+        _contract_id,
+        _admin,
+        customer,
+        merchant,
+        _usdc,
+        _xlm,
+        emergency_signer_one,
+        emergency_signer_two,
+        _emergency_signer_three,
+        _emergency_treasury,
+    ) = setup_env();
+
+    assert!(!client.is_paused());
+
+    let payment_id = make_id(&env, 66);
+    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
+    client.emergency_drain(
+        &emergency_signer_one,
+        &emergency_signer_one,
+        &emergency_signer_two,
+    );
+
+    assert!(client.is_paused());
+}
+
+#[test]
+fn test_resume_re_enables_operations() {
+    let (
+        env,
+        client,
+        contract_id,
+        admin,
+        customer,
+        merchant,
+        usdc,
+        _xlm,
+        emergency_signer_one,
+        emergency_signer_two,
+        _emergency_signer_three,
+        emergency_treasury,
+    ) = setup_env();
+
+    let payment_id_a = make_id(&env, 67);
+    deposit_default_ttl(&client, &customer, &payment_id_a, &merchant, 250_000_000i128);
+    client.emergency_drain(
+        &emergency_signer_one,
+        &emergency_signer_one,
+        &emergency_signer_two,
+    );
+    assert!(client.is_paused());
+
+    // Simulate treasury re-funding the contract so active escrow can settle.
+    token::StellarAssetClient::new(&env, &usdc).mint(&contract_id, &250_000_000i128);
+
+    // Admin + 2 emergency signers resume the contract.
+    client.resume(&admin, &emergency_signer_one, &emergency_signer_two);
+    assert!(!client.is_paused());
+
+    // Advance past cooldown so a subsequent drain would be allowed, but here
+    // we just verify a normal operation (release) now succeeds.
+    client.release(&admin, &payment_id_a);
+
+    let payment = client.get_payment(&payment_id_a);
+    assert_eq!(payment.status, PaymentStatus::Released);
+    assert_eq!(payment.released_amount, 250_000_000);
+
+    let token_client = token::Client::new(&env, &usdc);
+    assert_eq!(token_client.balance(&merchant), 250_000_000);
+    // treasury still holds what was drained
+    assert_eq!(token_client.balance(&emergency_treasury), 250_000_000);
 }
