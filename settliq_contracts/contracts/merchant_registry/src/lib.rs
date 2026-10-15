@@ -200,6 +200,28 @@ impl MerchantRegistryContract {
         env.storage().instance().get(&DataKey::PendingAdmin)
     }
 
+    /// Cancel an outstanding admin transfer proposal.  Callable by the
+    /// current admin only.
+    ///
+    /// Removes `DataKey::PendingAdmin` from storage so the previously proposed
+    /// address can no longer invoke `accept_admin`.  Emits an audit event so
+    /// the cancellation is visible on-chain.
+    pub fn cancel_admin_proposal(env: Env, caller: Address) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+
+        assert!(
+            env.storage().instance().has(&DataKey::PendingAdmin),
+            "No pending admin proposal"
+        );
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+
+        env.events().publish(
+            ("REGISTRY", "admin_transfer_cancelled"),
+            caller,
+        );
+    }
+
     /// Read the active admin address.
     pub fn get_admin(env: Env) -> Address {
         env.storage()
@@ -267,6 +289,10 @@ impl MerchantRegistryContract {
             .persistent()
             .get(&key)
             .expect("Merchant not found");
+
+        if record.status == MerchantStatus::Terminated {
+            panic!("Cannot modify terminated merchant");
+        }
 
         let old_name = record.name.clone();
         record.name = name.clone();
@@ -403,6 +429,10 @@ impl MerchantRegistryContract {
             .persistent()
             .get(&key)
             .expect("Merchant not found");
+
+        if record.status == MerchantStatus::Terminated {
+            panic!("Cannot modify terminated merchant");
+        }
 
         record.fee_bps = fee_bps;
         env.storage().persistent().set(&key, &record);
