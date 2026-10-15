@@ -373,7 +373,7 @@ fn test_refund_returns_remaining_balance_after_partial_release() {
     deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
     client.release_partial(&admin, &payment_id, &100_000_000i128);
     env.ledger().set_sequence_number(111);
-    client.refund(&payment_id);
+    client.refund(&admin, &payment_id);
 
     let payment = client.get_payment(&payment_id);
     assert_eq!(payment.status, PaymentStatus::Expired);
@@ -689,6 +689,7 @@ fn test_emergency_drain_moves_all_funds_to_treasury() {
         &emergency_signer_one,
         &emergency_signer_one,
         &emergency_signer_two,
+        &AssetType::Usdc,
     );
     assert_eq!(drained, 250_000_000);
 
@@ -719,7 +720,12 @@ fn test_emergency_drain_rejects_non_multisig_signer() {
     deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
     let random = Address::generate(&env);
 
-    client.emergency_drain(&emergency_signer_one, &emergency_signer_one, &random);
+    client.emergency_drain(
+        &emergency_signer_one,
+        &emergency_signer_one,
+        &random,
+        &AssetType::Usdc,
+    );
 }
 
 #[test]
@@ -746,6 +752,7 @@ fn test_emergency_drain_cooldown_prevents_repeated_drain() {
         &emergency_signer_one,
         &emergency_signer_one,
         &emergency_signer_two,
+        &AssetType::Usdc,
     );
 
     let payment_id_b = make_id(&env, 54);
@@ -754,6 +761,7 @@ fn test_emergency_drain_cooldown_prevents_repeated_drain() {
         &emergency_signer_one,
         &emergency_signer_one,
         &emergency_signer_two,
+        &AssetType::Usdc,
     );
 }
 
@@ -819,4 +827,155 @@ fn test_dispute_after_partial_release_resolves_to_merchant() {
     assert_eq!(token_client.balance(&customer), 750_000_000);
     assert_eq!(token_client.balance(&merchant), 250_000_000);
     assert_eq!(token_client.balance(&contract_id), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #17: emergency_drain supports XLM and USDC
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_emergency_drain_xlm_moves_funds_to_treasury() {
+    let (
+        env,
+        client,
+        contract_id,
+        _admin,
+        customer,
+        merchant,
+        _usdc,
+        xlm,
+        emergency_signer_one,
+        emergency_signer_two,
+        _emergency_signer_three,
+        emergency_treasury,
+    ) = setup_env();
+
+    // Mint XLM to the customer and deposit via XLM asset type.
+    token::StellarAssetClient::new(&env, &xlm).mint(&customer, &1_000_000_000i128);
+
+    let payment_id = make_id(&env, 60);
+    client.deposit(
+        &customer,
+        &payment_id,
+        &merchant,
+        &500_000_000i128,
+        &DEFAULT_PAYMENT_TTL,
+        &AssetType::Xlm,
+    );
+
+    let token_client = token::Client::new(&env, &xlm);
+    assert_eq!(token_client.balance(&contract_id), 500_000_000);
+
+    let drained = client.emergency_drain(
+        &emergency_signer_one,
+        &emergency_signer_one,
+        &emergency_signer_two,
+        &AssetType::Xlm,
+    );
+    assert_eq!(drained, 500_000_000);
+
+    assert_eq!(token_client.balance(&contract_id), 0);
+    assert_eq!(token_client.balance(&emergency_treasury), 500_000_000);
+}
+
+#[test]
+fn test_emergency_drain_usdc_leaves_xlm_untouched() {
+    let (
+        env,
+        client,
+        contract_id,
+        _admin,
+        customer,
+        merchant,
+        usdc,
+        xlm,
+        emergency_signer_one,
+        emergency_signer_two,
+        _emergency_signer_three,
+        emergency_treasury,
+    ) = setup_env();
+
+    // Deposit USDC payment.
+    let payment_id = make_id(&env, 61);
+    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 200_000_000i128);
+
+    // Also mint and deposit some XLM into the contract so there's a balance to distinguish.
+    token::StellarAssetClient::new(&env, &xlm).mint(&contract_id, &50_000_000i128);
+
+    // Drain only USDC.
+    let drained = client.emergency_drain(
+        &emergency_signer_one,
+        &emergency_signer_one,
+        &emergency_signer_two,
+        &AssetType::Usdc,
+    );
+    assert_eq!(drained, 200_000_000);
+
+    // USDC goes to treasury.
+    let usdc_client = token::Client::new(&env, &usdc);
+    assert_eq!(usdc_client.balance(&contract_id), 0);
+    assert_eq!(usdc_client.balance(&emergency_treasury), 200_000_000);
+
+    // XLM remains in contract.
+    let xlm_client = token::Client::new(&env, &xlm);
+    assert_eq!(xlm_client.balance(&contract_id), 50_000_000);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #18: voluntary pre-expiry refund by merchant or admin
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_merchant_can_refund_before_expiry() {
+    let (env, client, contract_id, _admin, customer, merchant, usdc, ..) = setup_env();
+    let payment_id = make_id(&env, 70);
+
+    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 300_000_000i128);
+
+    // Sequence is still at 10, expiry is 110 — payment has NOT expired yet.
+    // Merchant initiates a voluntary refund.
+    client.refund(&merchant, &payment_id);
+
+    let payment = client.get_payment(&payment_id);
+    assert_eq!(payment.status, PaymentStatus::Expired);
+    assert_eq!(client.get_balance(&payment_id), 0);
+
+    let token_client = token::Client::new(&env, &usdc);
+    assert_eq!(token_client.balance(&customer), 1_000_000_000); // full refund to customer
+    assert_eq!(token_client.balance(&contract_id), 0);
+}
+
+#[test]
+fn test_admin_can_refund_before_expiry() {
+    let (env, client, contract_id, admin, customer, merchant, usdc, ..) = setup_env();
+    let payment_id = make_id(&env, 71);
+
+    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 150_000_000i128);
+
+    // Pre-expiry: sequence 10, expiry 110.
+    client.refund(&admin, &payment_id);
+
+    let payment = client.get_payment(&payment_id);
+    assert_eq!(payment.status, PaymentStatus::Expired);
+    assert_eq!(client.get_balance(&payment_id), 0);
+
+    let token_client = token::Client::new(&env, &usdc);
+    assert_eq!(token_client.balance(&customer), 1_000_000_000);
+    assert_eq!(token_client.balance(&contract_id), 0);
+}
+
+#[test]
+fn test_unauthorized_refund_before_expiry_rejected() {
+    let (env, client, _contract_id, _admin, customer, merchant, _usdc, ..) = setup_env();
+    let payment_id = make_id(&env, 72);
+    let stranger = Address::generate(&env);
+
+    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 150_000_000i128);
+
+    // Stranger is neither admin nor merchant — must be rejected pre-expiry.
+    let result = client.try_refund(&stranger, &payment_id);
+    assert!(result.is_err());
+
+    // Payment is still pending.
+    assert_eq!(client.get_payment(&payment_id).status, PaymentStatus::Pending);
 }

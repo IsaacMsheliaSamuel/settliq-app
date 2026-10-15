@@ -85,6 +85,7 @@ struct EscrowStateEvent {
 struct EmergencyDrainEvent {
     amount: i128,
     caller: Address,
+    asset_type: AssetType,
 }
 
 #[contracttype]
@@ -549,9 +550,34 @@ impl PaymentEscrowContract {
         );
     }
 
-    pub fn refund(env: Env, payment_id: BytesN<32>) {
+    pub fn refund(env: Env, caller: Address, payment_id: BytesN<32>) {
+        caller.require_auth();
+
         let mut payment = Self::get_payment(env.clone(), payment_id.clone());
-        Self::require_expirable(&env, &payment);
+
+        // Determine whether the caller is authorized to initiate this refund.
+        // - Admin or merchant may refund at any time (pre-expiry voluntary refund).
+        // - Anyone may trigger a post-expiry refund via the permissionless expire()
+        //   path, but refund() itself requires an authorized caller.
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        let is_authorized = caller == admin || caller == payment.merchant;
+        if !is_authorized {
+            panic!("Not authorized to refund");
+        }
+
+        // If called by a non-admin non-merchant, or if post-expiry: allow freely.
+        // If pre-expiry: only merchant or admin may proceed (already checked above).
+        // Post-expiry callers who are merchant/admin also get through — no extra
+        // restriction needed.
+        if payment.status == PaymentStatus::Disputed {
+            panic!("Dispute is open");
+        }
+        if payment.status == PaymentStatus::Released {
+            panic!("Payment fully released");
+        }
+        if payment.status != PaymentStatus::Pending {
+            panic!("Payment is not pending");
+        }
 
         let remaining = Self::remaining_amount(&payment);
         if remaining <= 0 {
@@ -714,7 +740,13 @@ impl PaymentEscrowContract {
             .unwrap_or(DEFAULT_MAX_TTL_LEDGERS)
     }
 
-    pub fn emergency_drain(env: Env, caller: Address, signer_one: Address, signer_two: Address) -> i128 {
+    pub fn emergency_drain(
+        env: Env,
+        caller: Address,
+        signer_one: Address,
+        signer_two: Address,
+        asset_type: AssetType,
+    ) -> i128 {
         caller.require_auth();
         if signer_one == signer_two {
             panic!("Emergency signers must be distinct");
@@ -745,13 +777,13 @@ impl PaymentEscrowContract {
             panic!("Emergency drain cooldown active");
         }
 
-        let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
         let treasury: Address = env
             .storage()
             .instance()
             .get(&DataKey::EmergencyTreasury)
             .unwrap();
-        let token_client = token::Client::new(&env, &usdc_token);
+        let token_addr = Self::token_address(&env, &asset_type);
+        let token_client = token::Client::new(&env, &token_addr);
         let contract_address = env.current_contract_address();
         let amount = token_client.balance(&contract_address);
         if amount <= 0 {
@@ -764,7 +796,7 @@ impl PaymentEscrowContract {
             .set(&DataKey::EmergencyLastDrainLedger, &current_ledger);
         env.events().publish(
             ("ESCROW", "emergency_drain"),
-            EmergencyDrainEvent { amount, caller },
+            EmergencyDrainEvent { amount, caller, asset_type },
         );
 
         amount
