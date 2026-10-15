@@ -1,9 +1,10 @@
 #![cfg(test)]
 
-use crate::{AssetType, PaymentEscrowContract, PaymentEscrowContractClient, PaymentStatus};
+use crate::{AssetType, DataKey, PaymentEscrowContract, PaymentEscrowContractClient, PaymentStatus};
 use merchant_registry::{MerchantRegistryContract, MerchantRegistryContractClient};
 use soroban_sdk::{
-    testutils::Address as _, testutils::Ledger, token, Address, BytesN, Env, String,
+    testutils::{storage::Persistent as _, Address as _, Ledger},
+    token, Address, BytesN, Env, String,
 };
 
 const DEFAULT_PAYMENT_TTL: u32 = 100;
@@ -819,4 +820,89 @@ fn test_dispute_after_partial_release_resolves_to_merchant() {
     assert_eq!(token_client.balance(&customer), 750_000_000);
     assert_eq!(token_client.balance(&merchant), 250_000_000);
     assert_eq!(token_client.balance(&contract_id), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Persistent TTL extension (#28)
+// ---------------------------------------------------------------------------
+
+/// Verify that `deposit` calls `extend_ttl` on the payment entry.
+///
+/// In Soroban's test environment, storage can only be inspected from within
+/// a contract's own execution context.  We use `env.as_contract` to enter the
+/// escrow contract's address scope and read the TTL directly.
+#[test]
+fn test_deposit_extends_persistent_ttl() {
+    let (env, client, contract_id, _admin, customer, merchant, _usdc, ..) = setup_env();
+    let payment_id = make_id(&env, 90);
+
+    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
+
+    let key = DataKey::Payment(payment_id.clone());
+    let contract_id_clone = contract_id.clone();
+    env.as_contract(&contract_id_clone, || {
+        let ttl = env.storage().persistent().get_ttl(&key);
+        // The extend_ttl call in deposit must have bumped the TTL to at least
+        // DEFAULT_PAYMENT_TTL (100 ledgers).
+        assert!(
+            ttl >= DEFAULT_PAYMENT_TTL,
+            "deposit must extend persistent TTL; got {ttl}"
+        );
+    });
+}
+
+/// Verify that `release_partial` refreshes the persistent TTL so the entry
+/// survives until after the payment's expiry.
+#[test]
+fn test_release_partial_refreshes_persistent_ttl() {
+    let (env, client, contract_id, admin, customer, merchant, _usdc, ..) = setup_env();
+    let payment_id = make_id(&env, 91);
+
+    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
+
+    // Advance the ledger slightly (simulate time passing) then do a partial
+    // release and confirm the TTL is still meaningful.
+    env.ledger().set_sequence_number(50);
+    client.release_partial(&admin, &payment_id, &50_000_000i128);
+
+    let key = DataKey::Payment(payment_id.clone());
+    let contract_id_clone = contract_id.clone();
+    env.as_contract(&contract_id_clone, || {
+        let ttl = env.storage().persistent().get_ttl(&key);
+        // expiry = 10 (initial seq) + DEFAULT_PAYMENT_TTL(100) = 110
+        // ledgers_until_expiry = 110 - 50 = 60; TTL must be at least 60.
+        assert!(
+            ttl >= 60,
+            "release_partial must refresh persistent TTL; got {ttl}"
+        );
+    });
+}
+
+/// Verify that `dispute` extends the persistent TTL using the max TTL so a
+/// disputed payment cannot be archived before it is resolved.
+#[test]
+fn test_dispute_extends_persistent_ttl_to_max_ttl() {
+    let (env, client, contract_id, _admin, customer, merchant, _usdc, ..) = setup_env();
+    let payment_id = make_id(&env, 92);
+
+    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
+
+    client.dispute(
+        &customer,
+        &payment_id,
+        &String::from_str(&env, "testing ttl extension"),
+    );
+
+    let key = DataKey::Payment(payment_id.clone());
+    let contract_id_clone = contract_id.clone();
+    env.as_contract(&contract_id_clone, || {
+        let ttl = env.storage().persistent().get_ttl(&key);
+        // dispute extends TTL to DEFAULT_MAX_TTL_LEDGERS (518_400).  The test
+        // env caps at max_entry_ttl; we only assert TTL > DEFAULT_PAYMENT_TTL
+        // (100) to confirm the bump occurred.
+        assert!(
+            ttl > DEFAULT_PAYMENT_TTL,
+            "dispute must extend persistent TTL beyond deposit TTL; got {ttl}"
+        );
+    });
 }

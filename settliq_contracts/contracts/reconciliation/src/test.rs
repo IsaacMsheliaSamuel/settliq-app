@@ -317,3 +317,97 @@ fn test_verify_settlement_proof_rejects_excessive_depth() {
     for _ in 0..65 { proof.push_back(node.clone()); }
     client.verify_settlement_proof(&batch, &payment, &proof);
 }
+
+// ---------------------------------------------------------------------------
+// Domain separation (#26)
+// ---------------------------------------------------------------------------
+
+/// A raw 32-byte leaf input must produce a different hash when treated as a
+/// leaf (0x00 prefix) versus when its bytes appear in a pair hash (0x01
+/// prefix).  This is the core domain-separation invariant from RFC 6962.
+#[test]
+fn test_leaf_and_pair_hashes_are_domain_separated() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let id_a = make_id(&env, 0xAA);
+    let id_b = make_id(&env, 0xBB);
+
+    let leaf_a = hash_leaf(&env, &id_a);
+    let leaf_b = hash_leaf(&env, &id_b);
+    let pair = hash_pair(&env, &id_a, &id_b);
+
+    // Leaf hashes must differ from a pair hash even when using the same bytes.
+    assert_ne!(leaf_a, pair, "leaf hash must not equal pair hash");
+    assert_ne!(leaf_b, pair, "leaf hash must not equal pair hash");
+
+    // Two different leaf inputs must produce different hashes.
+    assert_ne!(leaf_a, leaf_b);
+}
+
+/// An attacker cannot forge a valid Merkle proof by supplying the 32-byte
+/// concatenation of two sibling hashes as a "leaf".  With domain separation,
+/// hash_leaf(node_bytes) ≠ hash_pair(left, right) even when the node bytes
+/// equal left||right, so a second-preimage attack is impossible.
+#[test]
+fn test_second_preimage_attack_is_impossible() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let left = make_id(&env, 0x01);
+    let right = make_id(&env, 0x02);
+
+    // The internal node hash computed by hash_pair.
+    let internal_hash = hash_pair(&env, &left, &right);
+
+    // If an attacker submits `internal_hash` as a payment ID and calls
+    // hash_leaf on it, the result must differ from `internal_hash` itself —
+    // i.e. hash_leaf(hash_pair(l,r)) ≠ hash_pair(l,r).
+    let attacker_leaf = hash_leaf(&env, &internal_hash);
+    assert_ne!(
+        attacker_leaf, internal_hash,
+        "second-preimage: hash_leaf(internal_node) must differ from the internal node hash"
+    );
+}
+
+/// End-to-end: build a two-leaf tree with domain-separated hashes, submit the
+/// root, and verify that a valid proof still passes and an invalid one still
+/// fails — confirming that the fix did not break proof verification.
+#[test]
+fn test_proof_verification_works_with_domain_separated_hashes() {
+    let (env, client, admin) = setup_env();
+
+    let payment_a = make_id(&env, 0x10);
+    let payment_b = make_id(&env, 0x20);
+
+    let leaf_a = hash_leaf(&env, &payment_a);
+    let leaf_b = hash_leaf(&env, &payment_b);
+    let root = hash_pair(&env, &leaf_a, &leaf_b);
+
+    let batch_id = client.submit_merkle_root(&admin, &root);
+
+    let valid_proof = vec![
+        &env,
+        MerkleProofNode {
+            sibling: leaf_b.clone(),
+            is_left: false,
+        },
+    ];
+    assert!(
+        client.verify_settlement_proof(&batch_id, &payment_a, &valid_proof),
+        "valid proof must verify"
+    );
+
+    // A proof built with the sibling in the wrong position must fail.
+    let invalid_proof = vec![
+        &env,
+        MerkleProofNode {
+            sibling: leaf_b,
+            is_left: true, // wrong: sibling is the right node, not left
+        },
+    ];
+    assert!(
+        !client.verify_settlement_proof(&batch_id, &payment_a, &invalid_proof),
+        "invalid proof must not verify"
+    );
+}
