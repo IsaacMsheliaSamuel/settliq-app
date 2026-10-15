@@ -232,6 +232,36 @@ impl BatchPaymentContract {
         payment_ids
     }
 
+    /// Admin: set or clear the optional MerchantRegistry contract address.
+    ///
+    /// Passing `Some(address)` enables merchant-approval gating in `create_batch`:
+    /// every merchant is checked against `MerchantRegistryClient::is_approved`
+    /// before the batch is processed. Passing `None` disables the check.
+    ///
+    /// Admin-only.
+    pub fn set_registry(env: Env, registry: Option<Address>) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic!("contract not initialized"));
+        admin.require_auth();
+
+        match registry {
+            Some(addr) => {
+                env.storage().instance().set(&DataKey::RegistryContract, &addr);
+            }
+            None => {
+                env.storage().instance().remove(&DataKey::RegistryContract);
+            }
+        }
+
+        env.events().publish(
+            (soroban_sdk::Symbol::new(&env, "RegistryUpdated"),),
+            (),
+        );
+    }
+
     /// Returns the on-chain record for a previously created payment, if any.
     pub fn get_payment(env: Env, id: BytesN<32>) -> Option<PaymentRecord> {
         env.storage().persistent().get(&DataKey::Payment(id))

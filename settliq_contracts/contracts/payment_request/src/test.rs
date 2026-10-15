@@ -158,6 +158,74 @@ fn test_fail_after_settled_panics() {
 }
 
 #[test]
+#[should_panic(expected = "expiry must be in the future")]
+fn test_create_payment_rejects_zero_expiry() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PaymentRequestContract);
+    let client = PaymentRequestContractClient::new(&env, &contract_id);
+
+    let merchant = Address::generate(&env);
+    let asset = Address::generate(&env);
+    let payment_id = String::from_str(&env, "pay_zero_exp");
+
+    env.ledger().set_timestamp(500);
+    // expiry = 0 <= timestamp = 500 → must reject
+    client.create_payment(&payment_id, &merchant, &100, &asset, &0);
+}
+
+#[test]
+#[should_panic(expected = "expiry must be in the future")]
+fn test_create_payment_rejects_past_expiry() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PaymentRequestContract);
+    let client = PaymentRequestContractClient::new(&env, &contract_id);
+
+    let merchant = Address::generate(&env);
+    let asset = Address::generate(&env);
+    let payment_id = String::from_str(&env, "pay_past_exp");
+
+    env.ledger().set_timestamp(1000);
+    // expiry = 999 <= timestamp = 1000 → must reject
+    client.create_payment(&payment_id, &merchant, &100, &asset, &999);
+}
+
+#[test]
+#[should_panic(expected = "expiry must be in the future")]
+fn test_create_payment_rejects_equal_expiry() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PaymentRequestContract);
+    let client = PaymentRequestContractClient::new(&env, &contract_id);
+
+    let merchant = Address::generate(&env);
+    let asset = Address::generate(&env);
+    let payment_id = String::from_str(&env, "pay_equal_exp");
+
+    env.ledger().set_timestamp(1000);
+    // expiry = 1000 == timestamp = 1000 → must reject (expiry must be strictly greater)
+    client.create_payment(&payment_id, &merchant, &100, &asset, &1000);
+}
+
+#[test]
+fn test_create_payment_accepts_future_expiry() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, PaymentRequestContract);
+    let client = PaymentRequestContractClient::new(&env, &contract_id);
+
+    let merchant = Address::generate(&env);
+    let asset = Address::generate(&env);
+    let payment_id = String::from_str(&env, "pay_future_exp");
+
+    env.ledger().set_timestamp(500);
+    // expiry = 1000 > timestamp = 500 → must succeed
+    client.create_payment(&payment_id, &merchant, &100, &asset, &1000);
+    assert_eq!(client.get_payment(&payment_id).status, PaymentStatus::Pending);
+}
+
+#[test]
 #[should_panic(expected = "payment id must not be empty")]
 fn test_empty_payment_id_rejected() {
     let env = Env::default();

@@ -89,6 +89,10 @@ impl PaymentRequestContract {
         if id.len() > MAX_ID_LEN {
             panic!("payment id too long");
         }
+        if expiry <= env.ledger().timestamp() {
+            panic!("expiry must be in the future");
+        }
+
         let key = DataKey::Payment(id.clone());
         if env.storage().persistent().has(&key) {
             panic!("Payment already exists");
