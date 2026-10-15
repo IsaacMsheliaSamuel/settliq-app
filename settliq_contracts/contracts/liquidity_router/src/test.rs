@@ -60,10 +60,9 @@ pub use broken_amm::BrokenAmm;
 fn setup() -> (Env, LiquidityRouterClient<'static>, Address) {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(LiquidityRouter, ());
-    let client = LiquidityRouterClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let contract_id = env.register(LiquidityRouter, (&admin,));
+    let client = LiquidityRouterClient::new(&env, &contract_id);
     (env, client, admin)
 }
 
@@ -71,11 +70,9 @@ fn setup() -> (Env, LiquidityRouterClient<'static>, Address) {
 fn test_initialize_sets_admin_and_empty_allowlist() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(LiquidityRouter, ());
-    let client = LiquidityRouterClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
-
-    client.initialize(&admin);
+    let contract_id = env.register(LiquidityRouter, (&admin,));
+    let client = LiquidityRouterClient::new(&env, &contract_id);
 
     // A pool that was never added must be rejected, proving the allowlist
     // was initialized to an empty set.
@@ -239,11 +236,9 @@ fn test_initialize_sets_admin_and_requires_auth() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let router_id = env.register(LiquidityRouter, ());
-    let router_client = LiquidityRouterClient::new(&env, &router_id);
-
     let admin = Address::generate(&env);
-    router_client.initialize(&admin);
+    let router_id = env.register(LiquidityRouter, (&admin,));
+    let router_client = LiquidityRouterClient::new(&env, &router_id);
 
     let (has_admin, has_pools) = env.as_contract(&router_id, || {
         (
@@ -253,24 +248,27 @@ fn test_initialize_sets_admin_and_requires_auth() {
     });
     assert!(has_admin);
     assert!(has_pools);
+    // Suppress unused variable warning; the client may be used for future operations.
+    let _ = router_client;
 }
 
 #[test]
-#[should_panic(expected = "already initialized")]
-fn test_initialize_cannot_be_called_twice() {
+fn test_constructor_sets_admin_atomically() {
+    // Verify that the __constructor sets the admin at deployment time.
+    // With __constructor there is no separate initialize() call, so there
+    // is no window between deploy and initialization for a front-running attack.
     let env = Env::default();
     env.mock_all_auths();
 
-    let router_id = env.register(LiquidityRouter, ());
+    let admin = Address::generate(&env);
+    let router_id = env.register(LiquidityRouter, (&admin,));
     let router_client = LiquidityRouterClient::new(&env, &router_id);
 
-    let admin = Address::generate(&env);
-    router_client.initialize(&admin);
-
-    // A second call (e.g. by an attacker) must be rejected and must not
-    // overwrite the admin or wipe the approved-pools allowlist.
+    // Admin is set atomically — any non-admin add_pool call must be rejected.
     let attacker = Address::generate(&env);
-    router_client.initialize(&attacker);
+    let pool = env.register(MockAmm, ());
+    let result = router_client.try_add_pool(&attacker, &pool);
+    assert!(result.is_err());
 }
 
 #[test]
@@ -278,11 +276,9 @@ fn test_admin_and_approved_pools_live_in_instance_storage() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let router_id = env.register(LiquidityRouter, ());
-    let router_client = LiquidityRouterClient::new(&env, &router_id);
-
     let admin = Address::generate(&env);
-    router_client.initialize(&admin);
+    let router_id = env.register(LiquidityRouter, (&admin,));
+    let router_client = LiquidityRouterClient::new(&env, &router_id);
 
     // Admin and the approved-pools allowlist are config singletons and must be
     // kept in instance() storage so their TTL is bumped with every contract
@@ -304,6 +300,7 @@ fn test_admin_and_approved_pools_live_in_instance_storage() {
     });
     assert!(!persistent_admin);
     assert!(!persistent_pools);
+    let _ = router_client;
 }
 
 #[test]

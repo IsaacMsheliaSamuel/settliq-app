@@ -157,3 +157,89 @@ fn test_large_threshold() {
     client.confirm_payment(&admin, &payment_id, &2000, &1_000_000, &merchant);
     assert!(client.is_settling(&payment_id));
 }
+
+// ── Issue #16: Strict monotonic ledger progression ───────────────────────────
+
+#[test]
+fn test_same_ledger_seq_rejected_on_second_confirmation() {
+    // Issue #16: Submitting two confirmations for the same payment with the
+    // same ledger_seq must be rejected on the second call. The old guard used
+    // >= (allowing equal), so an attacker could reach the confirmation
+    // threshold within a single ledger. The fix uses > (strictly greater).
+    let (env, admin, client) = setup(3);
+    let payment_id = pid(&env, 42);
+    let merchant = Address::generate(&env);
+
+    // First confirmation at ledger 1001 — must succeed.
+    client.confirm_payment(&admin, &payment_id, &1001, &100_000, &merchant);
+    assert_eq!(client.get_payment_confirmations(&payment_id), 1);
+
+    // Second confirmation at the same ledger 1001 — must be rejected.
+    let result = client.try_confirm_payment(&admin, &payment_id, &1001, &100_000, &merchant);
+    assert!(result.is_err());
+
+    // Confirmation count must remain 1 — the second call had no effect.
+    assert_eq!(client.get_payment_confirmations(&payment_id), 1);
+}
+
+#[test]
+fn test_strictly_greater_ledger_seq_accepted() {
+    // Confirming with a ledger_seq strictly greater than the last recorded
+    // value must succeed.
+    let (env, admin, client) = setup(3);
+    let payment_id = pid(&env, 43);
+    let merchant = Address::generate(&env);
+
+    client.confirm_payment(&admin, &payment_id, &1001, &100_000, &merchant);
+    // ledger 1002 > 1001 — must be accepted.
+    client.confirm_payment(&admin, &payment_id, &1002, &100_000, &merchant);
+    assert_eq!(client.get_payment_confirmations(&payment_id), 2);
+}
+
+#[test]
+#[should_panic(expected = "ledger_seq must exceed last recorded ledger")]
+fn test_duplicate_ledger_seq_panics_with_correct_message() {
+    // Verify that the panic message matches the updated error string in the fix.
+    let (env, admin, client) = setup(3);
+    let payment_id = pid(&env, 44);
+    let merchant = Address::generate(&env);
+
+    client.confirm_payment(&admin, &payment_id, &2000, &100_000, &merchant);
+    // Same ledger — must panic with the updated message.
+    client.confirm_payment(&admin, &payment_id, &2000, &100_000, &merchant);
+}
+
+#[test]
+fn test_regressed_ledger_seq_also_rejected() {
+    // A ledger_seq less than the last recorded must also be rejected —
+    // this was already blocked by the old >= check and must remain blocked.
+    let (env, admin, client) = setup(3);
+    let payment_id = pid(&env, 45);
+    let merchant = Address::generate(&env);
+
+    client.confirm_payment(&admin, &payment_id, &5000, &100_000, &merchant);
+    // ledger 4999 < 5000 — must be rejected.
+    let result = client.try_confirm_payment(&admin, &payment_id, &4999, &100_000, &merchant);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_cannot_reach_threshold_within_single_ledger() {
+    // Issue #16: The entire point of the fix is that the threshold cannot be
+    // reached by replaying the same ledger. With required=3 and one ledger,
+    // only 1 confirmation can be recorded, leaving the payment non-settling.
+    let (env, admin, client) = setup(3);
+    let payment_id = pid(&env, 46);
+    let merchant = Address::generate(&env);
+
+    // First confirmation succeeds.
+    client.confirm_payment(&admin, &payment_id, &1001, &100_000, &merchant);
+
+    // Second and third attempts with the same ledger must fail.
+    let _ = client.try_confirm_payment(&admin, &payment_id, &1001, &100_000, &merchant);
+    let _ = client.try_confirm_payment(&admin, &payment_id, &1001, &100_000, &merchant);
+
+    // Payment must not be settling — threshold was never reached.
+    assert!(!client.is_settling(&payment_id));
+    assert_eq!(client.get_payment_confirmations(&payment_id), 1);
+}

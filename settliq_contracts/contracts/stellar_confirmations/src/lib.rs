@@ -141,10 +141,14 @@ impl StellarConfirmationsContract {
         // Guard: ledger_seq must not be in the future relative to the actual chain state
         assert!(ledger_seq <= env.ledger().sequence(), "ledger_seq exceeds current ledger");
 
-        // Guard: ledger_seq must not regress relative to the last one recorded for this payment
+        // Guard: ledger_seq must be strictly greater than the last one recorded
+        // for this payment. Allowing ledger_seq == last_seen would permit multiple
+        // confirmations within the same ledger, enabling artificial inflation of
+        // the confirmation counter to the threshold in a single ledger block and
+        // invalidating the multi-ledger confirmation requirement.
         let last_key = DataKey::PaymentLastLedger(payment_id.clone());
         if let Some(last_seen) = env.storage().persistent().get::<_, u32>(&last_key) {
-            assert!(ledger_seq >= last_seen, "ledger_seq precedes last recorded ledger");
+            assert!(ledger_seq > last_seen, "ledger_seq must exceed last recorded ledger");
         }
 
         // Guard: already settling — idempotent no-op after threshold

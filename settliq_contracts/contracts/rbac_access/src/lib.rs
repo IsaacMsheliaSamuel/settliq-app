@@ -3,7 +3,7 @@
 mod test;
 
 use soroban_sdk::{
-    contract, contractclient, contractimpl, contracttype, Address, Env,
+    contract, contractimpl, contracttype, Address, Env,
 };
 
 // ── Role ────────────────────────────────────────────────────────────────────
@@ -58,17 +58,44 @@ impl RbacAccessContract {
         caller.require_auth();
         Self::require_role(&env, &caller, Role::SuperAdmin);
 
-        let is_new_super_admin = role == Role::SuperAdmin
-            && !env
+        // Read the account's existing role (if any) before overwriting it.
+        // This is required to correctly maintain SuperAdminCount for both:
+        //   - Issue #13: upgrading an existing non-SuperAdmin to SuperAdmin
+        //     (has() was true so the old code never incremented the count)
+        //   - Issue #14: demoting an existing SuperAdmin to a lower role
+        //     (the old code never decremented the count on demotion via grant_role)
+        let existing_role: Option<Role> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Role(account.clone()));
+
+        let is_becoming_super_admin =
+            role == Role::SuperAdmin && existing_role != Some(Role::SuperAdmin);
+
+        let is_demoting_super_admin =
+            existing_role == Some(Role::SuperAdmin) && role != Role::SuperAdmin;
+
+        // Issue #14: block demoting the last SuperAdmin or self-demotion via grant_role.
+        if is_demoting_super_admin {
+            if caller == account {
+                panic!("cannot demote own super admin role");
+            }
+            let count: u32 = env
                 .storage()
                 .persistent()
-                .has(&DataKey::Role(account.clone()));
+                .get(&DataKey::SuperAdminCount)
+                .unwrap_or(0);
+            if count <= 1 {
+                panic!("cannot demote last super admin");
+            }
+        }
 
         env.storage()
             .persistent()
             .set(&DataKey::Role(account.clone()), &role);
 
-        if is_new_super_admin {
+        // Issue #13: increment count when any account (new or pre-existing) becomes SuperAdmin.
+        if is_becoming_super_admin {
             let count: u32 = env
                 .storage()
                 .persistent()
@@ -77,6 +104,21 @@ impl RbacAccessContract {
             env.storage()
                 .persistent()
                 .set(&DataKey::SuperAdminCount, &(count + 1));
+        }
+
+        // Issue #14: decrement count when an existing SuperAdmin is demoted.
+        if is_demoting_super_admin {
+            let count: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::SuperAdminCount)
+                .unwrap_or(0);
+            env.storage()
+                .persistent()
+                .set(
+                    &DataKey::SuperAdminCount,
+                    &count.checked_sub(1).expect("SuperAdminCount underflow"),
+                );
         }
 
         env.events().publish(
