@@ -161,3 +161,79 @@ fn test_non_admin_cannot_propose_admin_change() {
 
     client.propose(&outsider, &op(&env, "add_admin"), &args(&env));
 }
+
+// ── Issue #1: maybe_execute must not execute or emit below threshold ──────────
+
+/// With the default threshold of 2, a proposal with only one approval (the
+/// proposer) must remain un-executed.  The old bug unconditionally set
+/// `executed = true` outside the threshold guard, so this test would have
+/// failed before the fix.
+#[test]
+fn test_proposal_below_threshold_remains_unexecuted() {
+    let (env, client, admin1, _admin2, _admin3) = setup_env();
+
+    let id = client.propose(&admin1, &op(&env, "transfer"), &args(&env));
+
+    let proposal = client.get_proposal(&id).unwrap();
+    assert_eq!(proposal.approvals.len(), 1);
+    assert!(!proposal.executed, "proposal must NOT be executed with only 1 approval");
+}
+
+/// With threshold raised to 3, a proposal with 2 approvals must still be
+/// non-executed.  This validates the threshold-from-storage path (Issue #1).
+#[test]
+fn test_proposal_not_executed_with_two_approvals_when_threshold_is_three() {
+    let (env, client, admin1, admin2, admin3) = setup_env();
+
+    // Raise threshold to 3 via a properly-approved set_threshold proposal.
+    let threshold_args = Bytes::from_slice(&env, &3u32.to_be_bytes());
+    let setup_id = client.propose(&admin1, &op(&env, "set_threshold"), &threshold_args);
+    client.approve(&admin2, &setup_id);
+    // Confirm threshold was changed.
+    assert_eq!(client.get_threshold(), 3);
+
+    // Now propose a new operation; admin1 is proposer (1 approval).
+    let id = client.propose(&admin2, &op(&env, "transfer"), &args(&env));
+
+    let proposal_after_propose = client.get_proposal(&id).unwrap();
+    assert!(!proposal_after_propose.executed, "must not execute at 1 approval");
+
+    // Second approval: admin3.
+    client.approve(&admin3, &id);
+
+    let proposal_after_second = client.get_proposal(&id).unwrap();
+    assert!(!proposal_after_second.executed, "must not execute at 2 approvals when threshold is 3");
+
+    // Third approval: admin1.
+    client.approve(&admin1, &id);
+
+    let proposal_after_third = client.get_proposal(&id).unwrap();
+    assert!(proposal_after_third.executed, "must execute at 3 approvals");
+}
+
+// ── Issue #2: set_threshold must reject values below 2 ───────────────────────
+
+/// Attempting to execute a set_threshold proposal with argument 1 must panic.
+/// The security invariant requires threshold >= 2 at all times.
+#[test]
+fn test_set_threshold_to_one_panics() {
+    let (env, client, admin1, admin2, _admin3) = setup_env();
+    let bad_args = Bytes::from_slice(&env, &1u32.to_be_bytes());
+
+    let id = client.propose(&admin1, &op(&env, "set_threshold"), &bad_args);
+
+    let result = client.try_approve(&admin2, &id);
+    assert!(result.is_err(), "set_threshold(1) must panic with threshold must be between 2 and admin count");
+}
+
+/// Setting threshold to a valid value (2 with 3 admins) must succeed.
+#[test]
+fn test_set_threshold_to_two_succeeds() {
+    let (env, client, admin1, admin2, _admin3) = setup_env();
+    let valid_args = Bytes::from_slice(&env, &2u32.to_be_bytes());
+
+    let id = client.propose(&admin1, &op(&env, "set_threshold"), &valid_args);
+    client.approve(&admin2, &id);
+
+    assert_eq!(client.get_threshold(), 2);
+}

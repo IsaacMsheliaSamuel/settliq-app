@@ -103,7 +103,7 @@ impl MultisigAdminContract {
 
         let admins = vec![&env, admin1, admin2, admin3];
         env.storage().instance().set(&DataKey::Admins, &admins);
-        env.storage().instance().set(&DataKey::Threshold, &2u32);
+        env.storage().instance().set(&DataKey::Threshold, &THRESHOLD);
         env.storage().instance().set(&DataKey::NextProposalId, &0u64);
     }
 
@@ -275,9 +275,6 @@ impl MultisigAdminContract {
         if proposal.rejected {
             return;
         }
-        if proposal.approvals.len() < THRESHOLD {
-            return;
-        }
         if env.ledger().timestamp() > proposal.expires_at {
             panic!("proposal expired");
         }
@@ -293,15 +290,6 @@ impl MultisigAdminContract {
                 },
             );
         }
-
-        proposal.executed = true;
-        env.events().publish(
-            ("MULTISIG", "proposal_executed"),
-            ProposalExecutedEvent {
-                proposal_id: proposal.id,
-                operation: proposal.operation.clone(),
-            },
-        );
     }
 
     fn apply_operation(env: &Env, proposal: &Proposal) {
@@ -338,8 +326,8 @@ impl MultisigAdminContract {
         } else if op == String::from_str(env, "set_threshold") {
             let new_threshold = Self::decode_u32(env, &proposal.args);
             let admins: Vec<Address> = env.storage().instance().get(&DataKey::Admins).unwrap();
-            if new_threshold == 0 || new_threshold > admins.len() {
-                panic!("invalid threshold");
+            if new_threshold < 2 || new_threshold > admins.len() {
+                panic!("threshold must be between 2 and admin count");
             }
             env.storage().instance().set(&DataKey::Threshold, &new_threshold);
         }

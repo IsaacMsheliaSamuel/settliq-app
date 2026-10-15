@@ -9,12 +9,13 @@ import {
 import { Response } from 'express';
 import { WaitlistService } from '../waitlist/waitlist.service';
 import { JwtAuthGuard } from '../auth/guards/jwt.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { MerchantRole } from '../merchants/entities/merchant.entity';
 
 @ApiTags('admin / waitlist')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(MerchantRole.ADMIN)
 @Controller('admin/waitlist')
 export class AdminWaitlistController {
