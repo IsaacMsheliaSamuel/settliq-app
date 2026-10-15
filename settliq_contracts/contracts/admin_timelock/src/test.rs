@@ -252,19 +252,47 @@ fn test_two_changes_have_distinct_ids() {
 }
 
 // ---------------------------------------------------------------------------
-// Issue #1049 — admin rotation
+// Issue #1049 / #9 — admin rotation must be timelocked (two-step)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_rotate_admin_transfers_control() {
+fn test_propose_rotate_admin_does_not_take_effect_immediately() {
     let (env, client, old_admin) = setup();
     let new_admin = Address::generate(&env);
 
-    client.rotate_admin(&old_admin, &new_admin);
+    client.propose_rotate_admin(&old_admin, &new_admin, &VALID_DELAY);
+
+    // Admin must still be the original until accept is called.
+    assert_eq!(client.get_admin(), old_admin);
+    assert_eq!(client.get_pending_admin(), Some(new_admin));
+}
+
+#[test]
+#[should_panic(expected = "Delay period has not elapsed")]
+fn test_accept_rotate_admin_rejected_before_delay() {
+    let (env, client, old_admin) = setup();
+    let new_admin = Address::generate(&env);
+
+    client.propose_rotate_admin(&old_admin, &new_admin, &VALID_DELAY);
+
+    // Advance only half the delay — not enough.
+    env.ledger().set_sequence_number(100 + VALID_DELAY / 2);
+    client.accept_rotate_admin(&old_admin);
+}
+
+#[test]
+fn test_accept_rotate_admin_succeeds_after_delay() {
+    let (env, client, old_admin) = setup();
+    let new_admin = Address::generate(&env);
+
+    client.propose_rotate_admin(&old_admin, &new_admin, &VALID_DELAY);
+
+    env.ledger().set_sequence_number(100 + VALID_DELAY);
+    client.accept_rotate_admin(&old_admin);
 
     assert_eq!(client.get_admin(), new_admin);
-
-    // old admin behavior verified in test_old_admin_cannot_act_after_rotation
+    // Pending state is cleared.
+    assert_eq!(client.get_pending_admin(), None);
 }
 
 #[test]
@@ -273,7 +301,11 @@ fn test_old_admin_cannot_act_after_rotation() {
     let (env, client, old_admin) = setup();
     let new_admin = Address::generate(&env);
 
-    client.rotate_admin(&old_admin, &new_admin);
+    client.propose_rotate_admin(&old_admin, &new_admin, &VALID_DELAY);
+    env.ledger().set_sequence_number(100 + VALID_DELAY);
+    client.accept_rotate_admin(&old_admin);
+
+    // old admin is no longer admin.
     client.schedule_change(&old_admin, &param(&env), &value(&env), &VALID_DELAY);
 }
 
@@ -282,7 +314,11 @@ fn test_new_admin_can_schedule_after_rotation() {
     let (env, client, old_admin) = setup();
     let new_admin = Address::generate(&env);
 
-    client.rotate_admin(&old_admin, &new_admin);
+    client.propose_rotate_admin(&old_admin, &new_admin, &VALID_DELAY);
+    env.ledger().set_sequence_number(100 + VALID_DELAY);
+    client.accept_rotate_admin(&old_admin);
+
+    // New admin starts fresh; schedule from the new ledger height.
     let id = client.schedule_change(&new_admin, &param(&env), &value(&env), &VALID_DELAY);
     let change = client.get_change(&id);
     assert_eq!(change.status, ChangeStatus::Pending);
@@ -290,11 +326,46 @@ fn test_new_admin_can_schedule_after_rotation() {
 
 #[test]
 #[should_panic(expected = "Not admin")]
-fn test_rotate_admin_unauthorized() {
+fn test_propose_rotate_admin_unauthorized() {
     let (env, client, _) = setup();
     let attacker = Address::generate(&env);
     let new_admin = Address::generate(&env);
-    client.rotate_admin(&attacker, &new_admin);
+    client.propose_rotate_admin(&attacker, &new_admin, &VALID_DELAY);
+}
+
+#[test]
+#[should_panic(expected = "delay_ledgers must be >= 17280 (24 h)")]
+fn test_propose_rotate_admin_below_min_delay_rejected() {
+    let (env, client, old_admin) = setup();
+    let new_admin = Address::generate(&env);
+    client.propose_rotate_admin(&old_admin, &new_admin, &(VALID_DELAY - 1));
+}
+
+#[test]
+fn test_cancel_rotate_admin_clears_pending_state() {
+    let (env, client, old_admin) = setup();
+    let new_admin = Address::generate(&env);
+
+    client.propose_rotate_admin(&old_admin, &new_admin, &VALID_DELAY);
+    client.cancel_rotate_admin(&old_admin);
+
+    // Pending admin is cleared and admin is unchanged.
+    assert_eq!(client.get_admin(), old_admin);
+    assert_eq!(client.get_pending_admin(), None);
+}
+
+#[test]
+#[should_panic(expected = "No pending admin rotation")]
+fn test_cancel_rotate_admin_without_proposal_panics() {
+    let (_env, client, old_admin) = setup();
+    client.cancel_rotate_admin(&old_admin);
+}
+
+#[test]
+#[should_panic(expected = "No pending admin rotation")]
+fn test_accept_rotate_admin_without_proposal_panics() {
+    let (_env, client, old_admin) = setup();
+    client.accept_rotate_admin(&old_admin);
 }
 
 // ---------------------------------------------------------------------------

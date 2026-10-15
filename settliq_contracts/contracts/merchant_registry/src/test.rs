@@ -267,6 +267,9 @@ fn test_merchants_listing_still_includes_terminated_merchants() {
 
 // ---------------------------------------------------------------------------
 // transfer_admin (two-step: propose_admin + accept_admin)
+// Issue #10 — the legacy single-step transfer_admin function has been removed.
+// Admin rotation must go through the two-step propose_admin / accept_admin flow.
+// ---------------------------------------------------------------------------
 
 #[test]
 fn test_propose_admin_does_not_take_effect_until_accepted() {
@@ -348,4 +351,34 @@ fn test_accept_admin_wrong_caller_fails() {
     // Disable mock auths so require_auth fails when not signed by pending admin
     env.set_auths(&[]);
     client.accept_admin();
+}
+
+// Issue #10 — admin transfer requires accept_admin: proposal alone does not
+// change the active admin address.
+#[test]
+fn test_propose_alone_does_not_transfer_admin() {
+    let (env, client, admin) = setup();
+    let new_admin = Address::generate(&env);
+
+    client.propose_admin(&admin, &new_admin);
+
+    // Admin must still be the original — accept has not been called.
+    assert_eq!(client.get_admin(), admin);
+    assert_eq!(client.get_pending_admin(), Some(new_admin));
+}
+
+// Issue #10 — once the two-step transfer completes, the old admin cannot
+// perform admin operations.
+#[test]
+#[should_panic(expected = "Caller is not admin")]
+fn test_old_admin_cannot_register_after_two_step_transfer() {
+    let (env, client, admin) = setup();
+    let new_admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+
+    client.propose_admin(&admin, &new_admin);
+    client.accept_admin();
+
+    // Old admin must be rejected for merchant registration.
+    client.register_merchant(&admin, &merchant, &sample_name(&env));
 }

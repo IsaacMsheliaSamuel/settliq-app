@@ -160,3 +160,78 @@ fn test_revoke_then_readd_admin_restores_access() {
     assert_eq!(user.role, AdminRole::SuperAdmin);
     assert!(user.active);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #11 — transfer_super_admin must demote the previous super admin
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_transfer_super_admin_demotes_previous_to_admin() {
+    let (env, client, super_admin) = setup();
+    let new_super = Address::generate(&env);
+
+    // New super must already exist as an admin, or will be created fresh.
+    client.transfer_super_admin(&super_admin, &new_super);
+
+    // Previous super admin is demoted to Admin.
+    let prev_user = client.get_admin(&super_admin).unwrap();
+    assert_eq!(prev_user.role, AdminRole::Admin);
+    assert!(prev_user.active);
+
+    // New super admin holds SuperAdmin credentials.
+    let new_user = client.get_admin(&new_super).unwrap();
+    assert_eq!(new_user.role, AdminRole::SuperAdmin);
+    assert!(new_user.active);
+}
+
+#[test]
+#[should_panic(expected = "not super admin")]
+fn test_previous_super_admin_cannot_transfer_again_after_demotion() {
+    let (env, client, super_admin) = setup();
+    let new_super = Address::generate(&env);
+    let third = Address::generate(&env);
+
+    client.transfer_super_admin(&super_admin, &new_super);
+
+    // The previous super admin is now only an Admin and must be rejected.
+    client.transfer_super_admin(&super_admin, &third);
+}
+
+#[test]
+fn test_new_super_admin_can_transfer_after_receiving_role() {
+    let (env, client, super_admin) = setup();
+    let new_super = Address::generate(&env);
+    let third = Address::generate(&env);
+
+    client.transfer_super_admin(&super_admin, &new_super);
+    // New super admin should now be able to perform a further transfer.
+    client.transfer_super_admin(&new_super, &third);
+
+    let third_user = client.get_admin(&third).unwrap();
+    assert_eq!(third_user.role, AdminRole::SuperAdmin);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #12 — deactivate_admin must prevent super admin self-deactivation
+// ---------------------------------------------------------------------------
+
+#[test]
+#[should_panic(expected = "cannot deactivate super admin")]
+fn test_deactivate_super_admin_panics() {
+    let (env, client, super_admin) = setup();
+    // Attempting to deactivate the super admin address must panic.
+    client.deactivate_admin(&super_admin, &super_admin);
+}
+
+#[test]
+fn test_deactivate_regular_admin_still_works() {
+    let (env, client, super_admin) = setup();
+    let admin = Address::generate(&env);
+    client.add_admin(&super_admin, &admin, &AdminRole::Admin);
+
+    client.deactivate_admin(&super_admin, &admin);
+
+    assert!(!client.is_admin(&admin));
+    let user = client.get_admin(&admin).unwrap();
+    assert!(!user.active);
+}
