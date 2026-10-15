@@ -11,6 +11,7 @@ import {
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
+import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { AuthTokenResponseDto } from './dto/auth-token-response.dto';
 
 @ApiTags('auth')
@@ -36,5 +37,15 @@ export class AuthController {
   @ApiUnauthorizedResponse({ description: 'Invalid credentials' })
   login(@Body() dto: LoginDto): Promise<AuthTokenResponseDto> {
     return this.authService.login(dto);
+  }
+
+  @Post('refresh')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Rotate refresh token and obtain a new token pair' })
+  @ApiOkResponse({ type: AuthTokenResponseDto })
+  @ApiBadRequestResponse({ description: 'Validation failed' })
+  @ApiUnauthorizedResponse({ description: 'Invalid, expired, or already-used refresh token' })
+  refresh(@Body() dto: RefreshTokenDto): Promise<AuthTokenResponseDto> {
+    return this.authService.refresh(dto.refreshToken);
   }
 }

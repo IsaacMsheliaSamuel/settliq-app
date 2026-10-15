@@ -7,6 +7,7 @@ import { WaitlistModule } from './waitlist/waitlist.module';
 import { AdminModule } from './admin/admin.module';
 import { Merchant } from './merchants/entities/merchant.entity';
 import { WaitlistEntry } from './waitlist/entities/waitlist.entity';
+import { RefreshToken } from './auth/refresh-token.entity';
 
 @Module({
   imports: [
@@ -16,7 +17,7 @@ import { WaitlistEntry } from './waitlist/entities/waitlist.entity';
       useFactory: (config: ConfigService) => ({
         type: 'postgres',
         url: config.get<string>('DATABASE_URL'),
-        entities: [Merchant, WaitlistEntry],
+        entities: [Merchant, WaitlistEntry, RefreshToken],
         synchronize: config.get<string>('NODE_ENV') !== 'production',
         ssl: config.get<string>('NODE_ENV') === 'production' ? { rejectUnauthorized: false } : false,
       }),
