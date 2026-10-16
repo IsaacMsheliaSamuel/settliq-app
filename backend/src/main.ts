@@ -2,12 +2,25 @@ import { NestFactory, Reflector } from '@nestjs/core';
 import { ClassSerializerInterceptor } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
+import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
+  // Issue #47: Register a global exception filter to sanitize unhandled errors
+  // and prevent internal stack traces or database details from reaching clients.
+  app.useGlobalFilters(new AllExceptionsFilter());
+
   app.setGlobalPrefix('api/v1');
   app.useGlobalInterceptors(new ClassSerializerInterceptor(app.get(Reflector)));
+
+  // Issue #48: Enable CORS so browser clients on different origins (e.g. the
+  // merchant dashboard or customer waitlist landing page) can reach the API.
+  // Allowed origins are configurable via CORS_ALLOWED_ORIGINS (comma-separated).
+  app.enableCors({
+    origin: process.env.CORS_ALLOWED_ORIGINS?.split(',') ?? '*',
+    credentials: true,
+  });
 
   const config = new DocumentBuilder()
     .setTitle('Settliq API')
@@ -23,3 +36,4 @@ async function bootstrap() {
 }
 
 bootstrap();
+

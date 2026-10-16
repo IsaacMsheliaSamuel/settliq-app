@@ -216,17 +216,10 @@ jobs:
             -- initialize \
             --admin "$DEPLOY_ADMIN"
 
-          # --- no constructor, but has a required one-time init() -----------
-          # batch_payments has no __constructor; its storage (admin, min/max
-          # amount limits) is only set up by calling init() after deploy. Skip
-          # this and every create_batch/set_limits/get_limits call panics with
-          # "contract not initialized".
-          deploy_contract batch_payments        wasm/batch_payments.wasm
-          stellar contract invoke \
-            --id "$batch_payments_id" \
-            --source deployer \
-            --network testnet \
-            -- init \
+          # --- constructor with amount limits --------------------------------
+          # batch_payments now uses `__constructor` for atomic initialization
+          # (issue #57), so admin and limits are passed directly to deploy.
+          deploy_contract batch_payments        wasm/batch_payments.wasm \
             --admin "$DEPLOY_ADMIN" \
             --min_amount "$BATCH_PAYMENTS_MIN_AMOUNT" \
             --max_amount "$BATCH_PAYMENTS_MAX_AMOUNT"
@@ -443,17 +436,10 @@ jobs:
             -- initialize \
             --admin "$DEPLOY_ADMIN"
 
-          # --- no constructor, but has a required one-time init() -----------
-          # batch_payments has no __constructor; its storage (admin, min/max
-          # amount limits) is only set up by calling init() after deploy. Skip
-          # this and every create_batch/set_limits/get_limits call panics with
-          # "contract not initialized".
-          deploy_contract batch_payments        wasm/batch_payments.wasm
-          stellar contract invoke \
-            --id "$batch_payments_id" \
-            --source deployer \
-            --network mainnet \
-            -- init \
+          # --- constructor with amount limits --------------------------------
+          # batch_payments now uses `__constructor` for atomic initialization
+          # (issue #57), so admin and limits are passed directly to deploy.
+          deploy_contract batch_payments        wasm/batch_payments.wasm \
             --admin "$DEPLOY_ADMIN" \
             --min_amount "$BATCH_PAYMENTS_MIN_AMOUNT" \
             --max_amount "$BATCH_PAYMENTS_MAX_AMOUNT"

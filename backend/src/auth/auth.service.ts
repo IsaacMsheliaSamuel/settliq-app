@@ -96,9 +96,13 @@ export class AuthService {
   async findMerchantByApiKey(rawKey: string): Promise<Merchant | null> {
     const merchants = await this.merchantsRepo.find({
       where: { apiKeyHash: Not(IsNull()) },
+      withDeleted: false,
     });
     for (const m of merchants) {
       if (m.apiKeyHash && (await bcrypt.compare(rawKey, m.apiKeyHash))) {
+        if (m.status !== MerchantStatus.ACTIVE || m.deletedAt) {
+          throw new UnauthorizedException('Merchant account is suspended or inactive');
+        }
         return m;
       }
     }

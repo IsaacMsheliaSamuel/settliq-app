@@ -173,6 +173,11 @@ impl LiquidityRouter {
     /// Returns SorobanAMM if depth is sufficient (impact below the configured
     /// threshold), otherwise returns StellarClassicDEX and emits an event.
     pub fn check_and_route(env: Env, pool_address: Address, amount_in: i128) -> Route {
+        // Issue #46: Reject zero and negative input amounts immediately.
+        if amount_in <= 0 {
+            panic!("amount_in must be > 0");
+        }
+
         // Issue #1025: Validate pool_address against allowlist before calling get_reserves
         let pools: Vec<Address> = env.storage().instance().get(&DataKey::ApprovedPools)
             .unwrap_or_else(|| Vec::new(&env));

@@ -5,8 +5,8 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Between, FindOptionsWhere } from 'typeorm';
-import { randomBytes } from 'crypto';
+import { Repository, Between, FindOptionsWhere, DataSource } from 'typeorm';
+import { randomBytes, createHash } from 'crypto';
 import { WaitlistEntry } from './entities/waitlist.entity';
 import { JoinWaitlistDto } from './dto/join-waitlist.dto';
 
@@ -15,27 +15,39 @@ export class WaitlistService {
   constructor(
     @InjectRepository(WaitlistEntry)
     private readonly waitlistRepo: Repository<WaitlistEntry>,
+    private readonly dataSource: DataSource,
   ) {}
 
   async join(dto: JoinWaitlistDto) {
     const existing = await this.waitlistRepo.findOne({ where: { email: dto.email } });
     if (existing) throw new ConflictException('Email already on waitlist');
 
-    const unsubscribeToken = randomBytes(32).toString('hex');
+    const rawToken = randomBytes(32).toString('hex');
+    const unsubscribeTokenHash = createHash('sha256').update(rawToken).digest('hex');
     const referralCode = randomBytes(6).toString('hex').toUpperCase();
 
-    // Credit referrer if valid code provided
-    if (dto.referralCode) {
-      const referrer = await this.waitlistRepo.findOne({
-        where: { referralCode: dto.referralCode },
-      });
-      if (referrer && referrer.email !== dto.email) {
-        await this.waitlistRepo.increment({ id: referrer.id }, 'referrals', 1);
+    // Wrap referral crediting and entry creation in a single atomic transaction
+    await this.dataSource.transaction(async (manager) => {
+      // Credit referrer if valid code provided
+      if (dto.referralCode) {
+        const referrer = await manager.findOne(WaitlistEntry, {
+          where: { referralCode: dto.referralCode },
+        });
+        if (referrer && referrer.email !== dto.email) {
+          await manager.increment(WaitlistEntry, { id: referrer.id }, 'referrals', 1);
+        }
       }
-    }
 
-    const entry = this.waitlistRepo.create({ ...dto, unsubscribeToken, referralCode });
-    return this.waitlistRepo.save(entry);
+      const entry = manager.create(WaitlistEntry, {
+        ...dto,
+        unsubscribeTokenHash,
+        referralCode,
+      });
+      await manager.save(WaitlistEntry, entry);
+    });
+
+    // Return the raw token so it can be included in the confirmation email
+    return { rawToken };
   }
 
   async checkUsername(username: string): Promise<{ available: boolean }> {
@@ -61,7 +73,8 @@ export class WaitlistService {
 
   /** One-click unsubscribe — no login required, token from email link */
   async unsubscribe(token: string): Promise<{ message: string }> {
-    const entry = await this.waitlistRepo.findOne({ where: { unsubscribeToken: token } });
+    const tokenHash = createHash('sha256').update(token).digest('hex');
+    const entry = await this.waitlistRepo.findOne({ where: { unsubscribeTokenHash: tokenHash } });
     if (!entry) throw new UnauthorizedException('Invalid or expired unsubscribe token');
     await this.waitlistRepo.update(entry.id, { unsubscribed: true });
     return { message: 'Successfully unsubscribed' };
@@ -69,7 +82,10 @@ export class WaitlistService {
 
   /** Full GDPR deletion — removes all PII, requires email + token */
   async deleteEntry(email: string, token: string): Promise<{ message: string }> {
-    const entry = await this.waitlistRepo.findOne({ where: { email, unsubscribeToken: token } });
+    const tokenHash = createHash('sha256').update(token).digest('hex');
+    const entry = await this.waitlistRepo.findOne({
+      where: { email, unsubscribeTokenHash: tokenHash },
+    });
     if (!entry) throw new UnauthorizedException('Invalid token or email not found');
     await this.waitlistRepo.delete(entry.id);
     // In production: queue a confirmation email here
@@ -106,10 +122,23 @@ export class WaitlistService {
         e.referrals,
         e.createdAt.toISOString(),
       ]
-        .map((v) => `"${String(v).replace(/"/g, '""')}"`)
+        .map((v) => sanitizeCsvField(v))
         .join(','),
     );
 
     return [header, ...rows].join('\n');
   }
+}
+
+/**
+ * Sanitize a CSV field value to prevent formula injection (CWE-1236).
+ * Fields starting with =, +, -, @, \t, or \r are prefixed with a single quote
+ * to neutralize spreadsheet formula execution in Excel / LibreOffice.
+ */
+function sanitizeCsvField(value: string | number): string {
+  const str = String(value);
+  const formulaTriggers = ['=', '+', '-', '@', '\t', '\r'];
+  const needsSanitizing = formulaTriggers.some((trigger) => str.startsWith(trigger));
+  const sanitized = needsSanitizing ? `'${str}` : str;
+  return `"${sanitized.replace(/"/g, '""')}"`;
 }

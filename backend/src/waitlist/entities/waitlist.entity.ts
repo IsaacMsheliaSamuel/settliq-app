@@ -26,9 +26,9 @@ export class WaitlistEntry {
   @Column({ default: false })
   unsubscribed: boolean;
 
-  /** Secure token used for one-click unsubscribe and deletion (no login required) */
+  /** SHA-256 hash of the unsubscribe token; raw token is sent in email and never persisted */
   @Column({ nullable: true })
-  unsubscribeToken: string;
+  unsubscribeTokenHash: string;
 
   @Column({ default: false })
   notified: boolean;
