@@ -58,11 +58,10 @@ pub struct BatchPaymentContract;
 
 #[contractimpl]
 impl BatchPaymentContract {
-    /// One-time initialization for admin and amount limits.
-    pub fn init(env: Env, admin: Address, min_amount: i128, max_amount: i128) {
-        if env.storage().instance().has(&DataKey::Admin) {
-            panic!("contract already initialized");
-        }
+    /// Atomic constructor: initializes admin and amount limits at deployment
+    /// time, eliminating the front-running window that existed with the
+    /// previous two-step `init()` approach (issue #57).
+    pub fn __constructor(env: Env, admin: Address, min_amount: i128, max_amount: i128) {
         if min_amount <= 0 {
             panic!("min amount must be > 0");
         }
@@ -70,7 +69,6 @@ impl BatchPaymentContract {
             panic!("min amount must be <= max amount");
         }
 
-        admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::MinAmount, &min_amount);
         env.storage().instance().set(&DataKey::MaxAmount, &max_amount);
