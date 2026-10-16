@@ -1,9 +1,10 @@
 #![cfg(test)]
 
-use crate::{AssetType, PaymentEscrowContract, PaymentEscrowContractClient, PaymentStatus};
+use crate::{AssetType, DataKey, PaymentEscrowContract, PaymentEscrowContractClient, PaymentStatus};
 use merchant_registry::{MerchantRegistryContract, MerchantRegistryContractClient};
 use soroban_sdk::{
-    testutils::Address as _, testutils::Ledger, token, Address, BytesN, Env, String,
+    testutils::{storage::Persistent as _, Address as _, Ledger},
+    token, Address, BytesN, Env, String,
 };
 
 const DEFAULT_PAYMENT_TTL: u32 = 100;

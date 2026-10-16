@@ -487,6 +487,11 @@ impl PaymentEscrowContract {
         };
 
         env.storage().persistent().set(&key, &payment);
+        // Extend the storage TTL so the entry survives at least through the
+        // payment's own expiry window.  Without this call the network can
+        // archive the entry before `release` or `resolve_dispute` is invoked,
+        // locking funds with no readable payment record.
+        env.storage().persistent().extend_ttl(&key, ttl_ledgers, ttl_ledgers);
 
         env.events().publish(
             ("ESCROW", "deposit"),
@@ -556,9 +561,14 @@ impl PaymentEscrowContract {
         if payment.released_amount == payment.amount {
             payment.status = PaymentStatus::Released;
         }
+        let key = DataKey::Payment(payment_id.clone());
         env.storage()
             .persistent()
-            .set(&DataKey::Payment(payment_id.clone()), &payment);
+            .set(&key, &payment);
+        // Refresh the storage TTL on each partial release so the entry stays
+        // accessible until the payment is fully settled or expired.
+        let ledgers_until_expiry = payment.expiry.saturating_sub(env.ledger().sequence());
+        env.storage().persistent().extend_ttl(&key, ledgers_until_expiry, ledgers_until_expiry);
 
         env.events().publish(
             ("ESCROW", "release"),
@@ -651,9 +661,19 @@ impl PaymentEscrowContract {
 
         payment.status = PaymentStatus::Disputed;
         payment.dispute_reason = Some(_reason.clone());
+        let key = DataKey::Payment(payment_id.clone());
         env.storage()
             .persistent()
-            .set(&DataKey::Payment(payment_id.clone()), &payment);
+            .set(&key, &payment);
+        // Extend the storage TTL when a dispute is opened: disputed payments
+        // can outlive their `expiry` (resolution is unbounded), so we use the
+        // maximum configured TTL to keep the entry readable.
+        let max_ttl = env
+            .storage()
+            .instance()
+            .get::<DataKey, u32>(&DataKey::MaxTtlLedgers)
+            .unwrap_or(DEFAULT_MAX_TTL_LEDGERS);
+        env.storage().persistent().extend_ttl(&key, max_ttl, max_ttl);
 
         env.events().publish(
             ("ESCROW", "dispute"),

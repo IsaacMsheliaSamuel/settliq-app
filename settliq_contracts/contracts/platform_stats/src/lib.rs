@@ -27,6 +27,28 @@ pub struct SystemHealth {
     pub partner_ok: bool,
 }
 
+/// Two-element ring buffer tracking the current and previous 24h payment
+/// counts.  Stored at a single, fixed key so the number of instance-storage
+/// entries never grows beyond a constant regardless of how long the contract
+/// runs.
+///
+/// Fields:
+/// - `index`      – the bucket index (`ledger_sequence / ACTIVE_WINDOW_LEDGERS`)
+///                  for the period whose count is in `count`.
+/// - `count`      – payment count for `index` (the current window).
+/// - `prev_count` – payment count for `index - 1` (the previous window).
+///                  Retained so that `stats()` can blend the two windows when
+///                  the current window has just started, though the contract
+///                  currently surfaces only `count`.  Keeping `prev_count`
+///                  here costs nothing and avoids a future storage migration.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct ActiveBucketState {
+    pub index: u32,
+    pub count: u32,
+    pub prev_count: u32,
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
@@ -34,8 +56,10 @@ pub enum DataKey {
     TotalMerchants,
     TotalPayments,
     TotalSettledVolumeUsd,
-    /// Rolling count of payments in the current 24h bucket.
-    ActiveBucket(u32),
+    /// Single fixed key for the rolling 24h active-payment ring buffer.
+    /// Replaces the old `ActiveBucket(u32)` variant that accumulated one key
+    /// per day and would eventually exhaust instance storage.
+    ActiveBucket,
     PartnerOk,
 }
 
@@ -81,9 +105,23 @@ impl PlatformStatsContract {
         }
 
         let bucket = env.ledger().sequence() / ACTIVE_WINDOW_LEDGERS;
-        let key = DataKey::ActiveBucket(bucket);
-        let count: u32 = env.storage().instance().get(&key).unwrap_or(0);
-        env.storage().instance().set(&key, &(count + 1));
+        let mut state: ActiveBucketState = env
+            .storage()
+            .instance()
+            .get(&DataKey::ActiveBucket)
+            .unwrap_or(ActiveBucketState { index: bucket, count: 0, prev_count: 0 });
+
+        if bucket > state.index {
+            // We have moved into a new window.  The old current count becomes
+            // the previous count (for the immediately preceding window), and
+            // any older history is discarded – only two windows are ever kept.
+            state.prev_count = if bucket == state.index + 1 { state.count } else { 0 };
+            state.count = 0;
+            state.index = bucket;
+        }
+
+        state.count += 1;
+        env.storage().instance().set(&DataKey::ActiveBucket, &state);
     }
 
     /// Admin-only: reflect partner API health status.
@@ -99,7 +137,8 @@ impl PlatformStatsContract {
         let active: u32 = env
             .storage()
             .instance()
-            .get(&DataKey::ActiveBucket(bucket))
+            .get::<DataKey, ActiveBucketState>(&DataKey::ActiveBucket)
+            .map(|state| if state.index == bucket { state.count } else { 0 })
             .unwrap_or(0);
 
         PlatformStats {

@@ -231,7 +231,7 @@ fn test_suspend_after_termination_fails() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_merchants_listing_still_includes_terminated_merchants() {
+fn test_merchants_listing_excludes_terminated_merchants() {
     let (env, client, admin) = setup();
 
     let merchant_a = Address::generate(&env);
@@ -242,27 +242,59 @@ fn test_merchants_listing_still_includes_terminated_merchants() {
     client.register_merchant(&admin, &merchant_b, &sample_name(&env));
     client.register_merchant(&admin, &merchant_c, &sample_name(&env));
 
-    // Terminate the middle merchant; it must remain in the index for now.
+    // Terminate the middle merchant; it should no longer appear in listings.
     client.terminate_merchant(&admin, &merchant_b);
     assert_eq!(
         client.get_merchant(&merchant_b).unwrap().status,
         MerchantStatus::Terminated
     );
 
-    // Document current behavior: terminated merchants are NOT pruned from the
-    // `Merchants` index and keep appearing in the paginated listing.
+    // The paginated query must return only active merchants.
     let page = client.merchants(&0, &10);
-    assert_eq!(page.len(), 3);
+    assert_eq!(page.len(), 2, "terminated merchant must be excluded from listing");
     assert!(page.contains(&merchant_a));
-    assert!(page.contains(&merchant_b));
+    assert!(!page.contains(&merchant_b), "terminated merchant must not appear");
     assert!(page.contains(&merchant_c));
+}
 
-    // Pagination still walks the full index, including the terminated entry.
-    let first_page = client.merchants(&0, &2);
-    assert_eq!(first_page.len(), 2);
-    let second_page = client.merchants(&1, &2);
+#[test]
+fn test_merchants_pagination_skips_terminated_entries_correctly() {
+    let (env, client, admin) = setup();
+
+    let merchant_a = Address::generate(&env);
+    let merchant_b = Address::generate(&env);
+    let merchant_c = Address::generate(&env);
+    let merchant_d = Address::generate(&env);
+
+    client.register_merchant(&admin, &merchant_a, &sample_name(&env));
+    client.register_merchant(&admin, &merchant_b, &sample_name(&env));
+    client.register_merchant(&admin, &merchant_c, &sample_name(&env));
+    client.register_merchant(&admin, &merchant_d, &sample_name(&env));
+
+    // Terminate b and c (positions 1 and 2 in the raw index).
+    client.terminate_merchant(&admin, &merchant_b);
+    client.terminate_merchant(&admin, &merchant_c);
+
+    // Page 0 with page_size 1 should return only merchant_a.
+    let first_page = client.merchants(&0, &1);
+    assert_eq!(first_page.len(), 1);
+    assert_eq!(first_page.get(0).unwrap(), merchant_a);
+
+    // Page 1 with page_size 1 should return only merchant_d (b and c are
+    // filtered out, so d is the second active merchant).
+    let second_page = client.merchants(&1, &1);
     assert_eq!(second_page.len(), 1);
-    assert_eq!(second_page.get(0).unwrap(), merchant_c);
+    assert_eq!(second_page.get(0).unwrap(), merchant_d);
+
+    // Page 2 has no more active merchants.
+    let third_page = client.merchants(&2, &1);
+    assert_eq!(third_page.len(), 0);
+
+    // A page that covers all active merchants at once returns both.
+    let full_page = client.merchants(&0, &10);
+    assert_eq!(full_page.len(), 2);
+    assert!(full_page.contains(&merchant_a));
+    assert!(full_page.contains(&merchant_d));
 }
 
 // ---------------------------------------------------------------------------
