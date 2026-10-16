@@ -111,6 +111,13 @@ struct UpgradeCancelledEvent {
     new_wasm_hash: BytesN<32>,
 }
 
+#[contracttype]
+struct DisputeSplitResolvedEvent {
+    payment_id: BytesN<32>,
+    merchant_amount: i128,
+    customer_amount: i128,
+}
+
 /// Defaults used until the admin overrides them via `set_max_dispute_window_ledgers`
 /// / `set_max_ttl_ledgers`.
 const DEFAULT_MAX_DISPUTE_WINDOW_LEDGERS: u32 = 51_840;
@@ -318,6 +325,9 @@ impl PaymentEscrowContract {
                 "removed"
             }
             (prev, Some(reg)) => {
+                if reg == &env.current_contract_address() {
+                    panic!("Registry cannot be self address");
+                }
                 env.storage().instance().set(&DataKey::RegistryContract, reg);
                 if prev.is_some() { "changed" } else { "set" }
             }
@@ -333,12 +343,17 @@ impl PaymentEscrowContract {
         );
     }
 
-    /// Update the maximum dispute window (in ledgers). Admin-only; must be > 0.
+    /// Update the maximum dispute window (in ledgers). Admin-only; must be > 0
+    /// and must not exceed max_ttl_ledgers.
     pub fn set_max_dispute_window_ledgers(env: Env, caller: Address, value: u32) {
         caller.require_auth();
         Self::require_admin(&env, &caller);
         if value == 0 {
             panic!("Max dispute window must be > 0");
+        }
+        let max_ttl = Self::get_max_ttl_ledgers(env.clone());
+        if value > max_ttl {
+            panic!("Max dispute window cannot exceed max TTL");
         }
         let previous = Self::get_max_dispute_window_ledgers(env.clone());
         env.storage()
@@ -350,18 +365,44 @@ impl PaymentEscrowContract {
         );
     }
 
-    /// Update the maximum payment TTL (in ledgers). Admin-only; must be > 0.
-    /// Only affects future deposits.
+    /// Update the maximum payment TTL (in ledgers). Admin-only; must be > 0
+    /// and must not be less than default_ttl_ledgers.  Only affects future deposits.
     pub fn set_max_ttl_ledgers(env: Env, caller: Address, value: u32) {
         caller.require_auth();
         Self::require_admin(&env, &caller);
         if value == 0 {
             panic!("Max TTL must be > 0");
         }
+        let default_ttl = Self::get_default_ttl_ledgers(env.clone());
+        if value < default_ttl {
+            panic!("Max TTL cannot be less than default TTL");
+        }
         let previous = Self::get_max_ttl_ledgers(env.clone());
         env.storage().instance().set(&DataKey::MaxTtlLedgers, &value);
         env.events().publish(
             ("CONFIG", "max_ttl"),
+            LimitUpdatedEvent { previous, new: value },
+        );
+    }
+
+    /// Update the default payment TTL (in ledgers). Admin-only; must be > 0
+    /// and must not exceed max_ttl_ledgers.  Only affects future deposits.
+    pub fn set_default_ttl_ledgers(env: Env, caller: Address, value: u32) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+        if value == 0 {
+            panic!("Default TTL must be > 0");
+        }
+        let max_ttl = Self::get_max_ttl_ledgers(env.clone());
+        if value > max_ttl {
+            panic!("Default TTL cannot exceed max TTL");
+        }
+        let previous = Self::get_default_ttl_ledgers(env.clone());
+        env.storage()
+            .instance()
+            .set(&DataKey::DefaultTtlLedgers, &value);
+        env.events().publish(
+            ("CONFIG", "default_ttl"),
             LimitUpdatedEvent { previous, new: value },
         );
     }
@@ -661,6 +702,77 @@ impl PaymentEscrowContract {
             EscrowStateEvent {
                 payment_id,
                 amount: remaining,
+            },
+        );
+    }
+
+    /// Resolve a dispute with a split allocation between merchant and customer.
+    /// Admin-only.  `merchant_amount` and `customer_amount` must both be >= 0
+    /// and their sum must exactly equal the remaining escrow balance.  Both
+    /// transfers execute atomically before the payment record is updated.
+    pub fn resolve_dispute_split(
+        env: Env,
+        caller: Address,
+        payment_id: BytesN<32>,
+        merchant_amount: i128,
+        customer_amount: i128,
+    ) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+
+        if merchant_amount < 0 {
+            panic!("Merchant amount must be >= 0");
+        }
+        if customer_amount < 0 {
+            panic!("Customer amount must be >= 0");
+        }
+
+        let mut payment = Self::get_payment(env.clone(), payment_id.clone());
+        if payment.status != PaymentStatus::Disputed {
+            panic!("Dispute is not open");
+        }
+
+        let remaining = Self::remaining_amount(&payment);
+        if remaining <= 0 {
+            panic!("Payment fully released");
+        }
+
+        let total = merchant_amount
+            .checked_add(customer_amount)
+            .expect("allocation overflow");
+        if total != remaining {
+            panic!("Split amounts must sum to remaining balance");
+        }
+
+        if merchant_amount > 0 {
+            Self::transfer_from_contract(
+                &env,
+                &payment.merchant,
+                merchant_amount,
+                &payment.asset_type,
+            );
+        }
+        if customer_amount > 0 {
+            Self::transfer_from_contract(
+                &env,
+                &payment.customer,
+                customer_amount,
+                &payment.asset_type,
+            );
+        }
+
+        payment.released_amount = payment.amount;
+        payment.status = PaymentStatus::Released;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Payment(payment_id.clone()), &payment);
+
+        env.events().publish(
+            ("ESCROW", "dispute_split_resolved"),
+            DisputeSplitResolvedEvent {
+                payment_id,
+                merchant_amount,
+                customer_amount,
             },
         );
     }
