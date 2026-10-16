@@ -137,6 +137,7 @@ jobs:
           REGISTRY_ADDRESS: ${{ vars.TESTNET_REGISTRY_ADDRESS }}
           BATCH_PAYMENTS_MIN_AMOUNT: ${{ vars.TESTNET_BATCH_PAYMENTS_MIN_AMOUNT }}
           BATCH_PAYMENTS_MAX_AMOUNT: ${{ vars.TESTNET_BATCH_PAYMENTS_MAX_AMOUNT }}
+          ALLOWED_CALLER: ${{ vars.TESTNET_FEE_DISTRIBUTOR_ALLOWED_CALLER }}
         run: |
           set -euo pipefail
 
@@ -172,6 +173,7 @@ jobs:
           require CONFIRMATION_COUNT
           require BATCH_PAYMENTS_MIN_AMOUNT
           require BATCH_PAYMENTS_MAX_AMOUNT
+          require ALLOWED_CALLER
           [ "$missing" -eq 0 ] || exit 1
 
           # ------------------------------------------------------------------
@@ -263,7 +265,8 @@ jobs:
             --treasury "$TREASURY" \
             --lp_address "$LP_ADDRESS" \
             --lp_share_bps "$LP_SHARE_BPS" \
-            --usdc_token "$USDC_TOKEN"
+            --usdc_token "$USDC_TOKEN" \
+            --allowed_caller "$ALLOWED_CALLER"
 
           # payment_escrow takes an Option<Address> registry. Default it to the
           # merchant_registry just deployed, so the two are wired together in
@@ -358,6 +361,7 @@ jobs:
           REGISTRY_ADDRESS: ${{ vars.MAINNET_REGISTRY_ADDRESS }}
           BATCH_PAYMENTS_MIN_AMOUNT: ${{ vars.MAINNET_BATCH_PAYMENTS_MIN_AMOUNT }}
           BATCH_PAYMENTS_MAX_AMOUNT: ${{ vars.MAINNET_BATCH_PAYMENTS_MAX_AMOUNT }}
+          ALLOWED_CALLER: ${{ vars.MAINNET_FEE_DISTRIBUTOR_ALLOWED_CALLER }}
         run: |
           set -euo pipefail
 
@@ -393,6 +397,7 @@ jobs:
           require CONFIRMATION_COUNT
           require BATCH_PAYMENTS_MIN_AMOUNT
           require BATCH_PAYMENTS_MAX_AMOUNT
+          require ALLOWED_CALLER
           [ "$missing" -eq 0 ] || exit 1
 
           # ------------------------------------------------------------------
@@ -484,7 +489,8 @@ jobs:
             --treasury "$TREASURY" \
             --lp_address "$LP_ADDRESS" \
             --lp_share_bps "$LP_SHARE_BPS" \
-            --usdc_token "$USDC_TOKEN"
+            --usdc_token "$USDC_TOKEN" \
+            --allowed_caller "$ALLOWED_CALLER"
 
           # payment_escrow takes an Option<Address> registry. Default it to the
           # merchant_registry just deployed, so the two are wired together in
