@@ -90,11 +90,10 @@ async function proxyHealthAdmin(env) {
 
 // ─── Serve status page HTML ───────────────────────────────────────────────────
 async function serveStatusPage(env) {
-  // STATUS_HTML is bound as a text blob in wrangler.toml.
-  // Fallback: fetch from the same worker's origin (useful in local dev).
-  const html = typeof STATUS_HTML !== 'undefined'
-    ? STATUS_HTML
-    : await fetchFallbackHtml();
+  // STATUS_HTML is bound as a text blob in wrangler.toml and is available on
+  // the env object in ES module workers (not on the global scope).
+  // Fallback: serve a minimal stub when the binding is absent (local dev).
+  const html = env.STATUS_HTML ?? (await fetchFallbackHtml());
 
   // Inject the API base so the page calls /api/status (this worker's proxy)
   // instead of the real API directly — avoids CORS entirely.
