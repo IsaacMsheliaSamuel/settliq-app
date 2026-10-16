@@ -214,6 +214,10 @@ impl AdminAuthContract {
     }
 
     /// Transfer SuperAdmin rights to a new address. SuperAdmin only (#1042).
+    ///
+    /// After transfer the previous super admin's record is demoted to
+    /// `AdminRole::Admin` so that only the new holder retains SuperAdmin
+    /// credentials (#11).
     pub fn transfer_super_admin(env: Env, caller: Address, new_super_admin: Address) {
         caller.require_auth();
         Self::require_super_admin(&env, &caller);
@@ -222,6 +226,17 @@ impl AdminAuthContract {
 
         // Update the SuperAdmin key
         env.storage().instance().set(&DataKey::SuperAdmin, &new_super_admin);
+
+        // Demote the previous super admin to a regular Admin so they no longer
+        // hold SuperAdmin credentials (#11).
+        Self::save(
+            &env,
+            AdminUser {
+                admin: previous.clone(),
+                role: AdminRole::Admin,
+                active: true,
+            },
+        );
 
         // Ensure the new super admin has an AdminUser record with SuperAdmin role
         let is_new = !env.storage().persistent().has(&DataKey::Admin(new_super_admin.clone()));
@@ -258,9 +273,19 @@ impl AdminAuthContract {
 
     /// Deactivate an admin without removing its credential record. SuperAdmin
     /// only. `is_admin` returns false for a deactivated admin.
+    ///
+    /// The SuperAdmin cannot deactivate themselves: doing so would cause
+    /// `authorize(super_admin)` to fail and lock out all SuperAdmin-gated
+    /// operations (#12).
     pub fn deactivate_admin(env: Env, caller: Address, admin: Address) {
         caller.require_auth();
         Self::require_super_admin(&env, &caller);
+
+        // Prevent the SuperAdmin from deactivating themselves (#12).
+        let super_admin: Address = env.storage().instance().get(&DataKey::SuperAdmin).unwrap();
+        if admin == super_admin {
+            panic!("cannot deactivate super admin");
+        }
 
         let key = DataKey::Admin(admin.clone());
         let mut user: AdminUser = env

@@ -299,6 +299,9 @@ fn test_merchants_pagination_skips_terminated_entries_correctly() {
 
 // ---------------------------------------------------------------------------
 // transfer_admin (two-step: propose_admin + accept_admin)
+// Issue #10 — the legacy single-step transfer_admin function has been removed.
+// Admin rotation must go through the two-step propose_admin / accept_admin flow.
+// ---------------------------------------------------------------------------
 
 #[test]
 fn test_propose_admin_does_not_take_effect_until_accepted() {

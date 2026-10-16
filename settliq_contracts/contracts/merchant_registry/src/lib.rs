@@ -443,25 +443,6 @@ impl MerchantRegistryContract {
         );
     }
 
-    /// Transfer admin rights to a new address.  Callable by the current admin.
-    pub fn transfer_admin(env: Env, caller: Address, new_admin: Address) {
-        caller.require_auth();
-        Self::require_admin(&env, &caller);
-
-        let old_admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .expect("Admin not set");
-
-        env.storage().instance().set(&DataKey::Admin, &new_admin);
-
-        env.events().publish(
-            ("REGISTRY", "admin_transferred"),
-            AdminTransferredEvent { old_admin, new_admin },
-        );
-    }
-
     // ------------------------------------------------------------------
     // Queries
     // ------------------------------------------------------------------
