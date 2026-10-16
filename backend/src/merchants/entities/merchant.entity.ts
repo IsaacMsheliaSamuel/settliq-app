@@ -5,6 +5,7 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
   DeleteDateColumn,
+  Index,
 } from 'typeorm';
 import { Exclude } from 'class-transformer';
 
@@ -52,6 +53,20 @@ export class Merchant {
   @Exclude()
   @Column({ nullable: true })
   apiKeyHash: string;
+
+  /**
+   * SHA-256 hex digest of the raw API key, used as a fast indexed lookup key
+   * so findMerchantByApiKey does not have to run bcrypt.compare against every
+   * merchant. The bcrypt hash (apiKeyHash) is still verified after lookup to
+   * provide the actual cryptographic security guarantee.
+   *
+   * Must be updated atomically alongside apiKeyHash whenever an API key is
+   * issued or rotated.
+   */
+  @Exclude()
+  @Index()
+  @Column({ nullable: true })
+  apiKeyLookupHash: string;
 
   @Column({ type: 'decimal', precision: 5, scale: 4, default: 0.015 })
   feeRate: number;

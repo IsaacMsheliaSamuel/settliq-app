@@ -13,10 +13,14 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     @InjectRepository(Merchant)
     private readonly merchantsRepo: Repository<Merchant>,
   ) {
+    const secret = config.get<string>('JWT_SECRET');
+    if (!secret) {
+      throw new Error('JWT_SECRET environment variable is not set. Refusing to start with an insecure fallback.');
+    }
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      secretOrKey: config.get<string>('JWT_SECRET', 'fallback-secret'),
+      secretOrKey: secret,
     });
   }
 

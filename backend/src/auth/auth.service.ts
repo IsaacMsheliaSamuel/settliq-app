@@ -5,7 +5,7 @@ import {
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Not, IsNull } from 'typeorm';
+import { Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 import { Merchant, MerchantStatus } from '../merchants/entities/merchant.entity';
@@ -92,21 +92,40 @@ export class AuthService {
     return this.issueTokenPair(merchant);
   }
 
-  /** Timing-safe API key lookup — iterates all merchants and uses bcrypt.compare */
+  /**
+   * Looks up a merchant by API key in O(1) via an indexed SHA-256 lookup hash,
+   * then verifies the bcrypt hash on only that one candidate record.
+   *
+   * The previous implementation scanned every merchant with an API key and ran
+   * bcrypt.compare sequentially (~250ms × N), making it trivially exploitable
+   * as a DoS vector: a single unauthenticated request with any x-api-key header
+   * would block the event loop for seconds (100 merchants → ~25 s).
+   *
+   * Requires the `apiKeyLookupHash` column (SHA-256 of the raw key) to be
+   * populated atomically alongside `apiKeyHash` when a key is issued or rotated.
+   */
   async findMerchantByApiKey(rawKey: string): Promise<Merchant | null> {
-    const merchants = await this.merchantsRepo.find({
-      where: { apiKeyHash: Not(IsNull()) },
+    const lookupHash = crypto.createHash('sha256').update(rawKey).digest('hex');
+
+    const merchant = await this.merchantsRepo.findOne({
+      where: { apiKeyLookupHash: lookupHash },
       withDeleted: false,
     });
-    for (const m of merchants) {
-      if (m.apiKeyHash && (await bcrypt.compare(rawKey, m.apiKeyHash))) {
-        if (m.status !== MerchantStatus.ACTIVE || m.deletedAt) {
-          throw new UnauthorizedException('Merchant account is suspended or inactive');
-        }
-        return m;
-      }
+
+    if (!merchant?.apiKeyHash) {
+      return null;
     }
-    return null;
+
+    const valid = await bcrypt.compare(rawKey, merchant.apiKeyHash);
+    if (!valid) {
+      return null;
+    }
+
+    if (merchant.status !== MerchantStatus.ACTIVE || merchant.deletedAt) {
+      throw new UnauthorizedException('Merchant account is suspended or inactive');
+    }
+
+    return merchant;
   }
 
   // ---------------------------------------------------------------------------
