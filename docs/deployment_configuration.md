@@ -53,8 +53,8 @@ Two constructors take container types, which the Stellar CLI expects as JSON.
 
 ```json
 [
-  { "min_amount": "0",         "max_amount": "10000000",  "fee_bps": 100 },
-  { "min_amount": "10000001",  "max_amount": "100000000", "fee_bps": 50  }
+  { "threshold_usdc": "0",         "fee_bps": 100 },
+  { "threshold_usdc": "10000001",  "fee_bps": 50  }
 ]
 ```
 

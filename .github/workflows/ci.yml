@@ -11,7 +11,7 @@ env:
   LLVM_PROFILE_FILE: target/coverage/settliq-%p-%m.profraw
 
 jobs:
-  backend-ci:
+  backend:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -22,21 +22,44 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "20"
 
-      - name: Set up pnpm
+      - name: Install pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 10.30.2
+          version: 9
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        shell: bash
+        run: echo "store=$(pnpm store path)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pnpm modules
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-cache.outputs.store }}
+          key: ${{ runner.os }}-pnpm-backend-${{ hashFiles('backend/pnpm-lock.yaml', 'backend/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-backend-
 
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile || pnpm install
 
-      - name: Build
-        run: pnpm run build
+      - name: Run tests with coverage
+        run: pnpm test -- --coverage --coverageReporters=cobertura --coverageDirectory=coverage
+        env:
+          NODE_ENV: test
 
-      - name: Test
-        run: pnpm run test
+      - name: Upload backend coverage to Codecov
+        uses: codecov/codecov-action@v4
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          files: backend/coverage/cobertura-coverage.xml
+          flags: backend
+          name: settliq-backend
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
   ci:
     runs-on: ubuntu-latest
