@@ -9,6 +9,7 @@ import { AdminModule } from './admin/admin.module';
 import { HealthModule } from './health/health.module';
 import { Merchant } from './merchants/entities/merchant.entity';
 import { WaitlistEntry } from './waitlist/entities/waitlist.entity';
+import { RefreshToken } from './auth/refresh-token.entity';
 
 @Module({
   imports: [

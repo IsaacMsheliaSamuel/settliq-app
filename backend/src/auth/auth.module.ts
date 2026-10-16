@@ -10,11 +10,12 @@ import { ApiKeyStrategy } from './strategies/api-key.strategy';
 import { JwtAuthGuard } from './guards/jwt.guard';
 import { ApiKeyGuard } from './guards/api-key.guard';
 import { Merchant } from '../merchants/entities/merchant.entity';
+import { RefreshToken } from './refresh-token.entity';
 
 @Global()
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Merchant]),
+    TypeOrmModule.forFeature([Merchant, RefreshToken]),
     PassportModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
