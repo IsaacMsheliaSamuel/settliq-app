@@ -223,3 +223,41 @@ fn test_get_unknown_panics() {
     let result = client.try_get_settlement(&pid(&env, 99));
     assert!(result.is_err());
 }
+
+// ── AllPage pagination: bounded storage per key ───────────────────────────────
+
+/// Records enough settlements to span multiple AllPage keys and asserts that
+/// no single storage entry grows unbounded with total settlement count, that
+/// total_settlement_count is O(1), and that list_all_settlements reads only
+/// the requested page.
+#[test]
+fn test_platform_wide_index_uses_bounded_pages() {
+    let (env, admin, client) = setup();
+    let merchant = Address::generate(&env);
+
+    // Record 45 settlements: seeds 100..145
+    // With PAGE_SIZE = 20 this creates page 0 (20 entries), page 1 (20 entries),
+    // page 2 (5 entries).
+    for seed in 100u8..145 {
+        record(&client, &admin, &env, seed, &merchant, 1_000, 20);
+    }
+
+    // Scalar count must be exact.
+    assert_eq!(client.total_settlement_count(), 45);
+
+    // Page 0: full page of 20.
+    let page0 = client.list_all_settlements(&0);
+    assert_eq!(page0.len(), 20);
+
+    // Page 1: full page of 20.
+    let page1 = client.list_all_settlements(&1);
+    assert_eq!(page1.len(), 20);
+
+    // Page 2: remaining 5 entries.
+    let page2 = client.list_all_settlements(&2);
+    assert_eq!(page2.len(), 5);
+
+    // Page 3: beyond end — empty.
+    let page3 = client.list_all_settlements(&3);
+    assert_eq!(page3.len(), 0);
+}

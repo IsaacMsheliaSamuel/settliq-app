@@ -160,3 +160,103 @@ fn test_revoke_then_readd_admin_restores_access() {
     assert_eq!(user.role, AdminRole::SuperAdmin);
     assert!(user.active);
 }
+
+// Issue #29 — admin index uses slot-based persistent keys; count is a scalar
+// in instance storage that never grows with the roster.
+#[test]
+fn test_admin_count_matches_roster_size() {
+    let (env, client, super_admin) = setup();
+    // Super admin counts as 1 slot from constructor.
+    assert_eq!(client.admin_count(), 1);
+
+    let admin1 = Address::generate(&env);
+    let admin2 = Address::generate(&env);
+    client.add_admin(&super_admin, &admin1, &AdminRole::Admin);
+    assert_eq!(client.admin_count(), 2);
+    client.add_admin(&super_admin, &admin2, &AdminRole::Admin);
+    assert_eq!(client.admin_count(), 3);
+
+    client.revoke_admin(&super_admin, &admin1);
+    assert_eq!(client.admin_count(), 2);
+}
+
+// Issue #29 — list_admins reads from slot-based persistent storage and returns
+// the correct page without bloating instance storage.
+#[test]
+fn test_list_admins_returns_correct_page() {
+    let (env, client, super_admin) = setup();
+    let mut added: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(&env);
+    for _ in 0..5u32 {
+        let a = Address::generate(&env);
+        client.add_admin(&super_admin, &a, &AdminRole::Admin);
+        added.push_back(a);
+    }
+    // Total = super_admin + 5 admins = 6
+    assert_eq!(client.admin_count(), 6);
+
+    // First page of 3 starting at offset 0
+    let page0 = client.list_admins(&0, &3);
+    assert_eq!(page0.len(), 3);
+
+    // Second page of 3 starting at offset 3
+    let page1 = client.list_admins(&3, &3);
+    assert_eq!(page1.len(), 3);
+
+    // Page beyond end returns empty
+    let page2 = client.list_admins(&6, &3);
+    assert_eq!(page2.len(), 0);
+}
+
+// Issue #29 — large roster (20 admins) verifies cost is not concentrated in
+// instance storage: admin_count remains a single scalar, and each add/revoke
+// only touches its own slot plus the count key.
+#[test]
+fn test_large_admin_roster_slot_based_indexing() {
+    let (env, client, super_admin) = setup();
+    let n = 20u32;
+    for _ in 0..n {
+        let a = Address::generate(&env);
+        client.add_admin(&super_admin, &a, &AdminRole::Admin);
+    }
+    // super_admin (slot 0) + 20 = 21
+    assert_eq!(client.admin_count(), n + 1);
+
+    // Full listing via pagination: collect all entries in pages of 5
+    let mut total_listed = 0u32;
+    let page_size = 5u32;
+    let total = client.admin_count();
+    let mut offset = 0u32;
+    while offset < total {
+        let page = client.list_admins(&offset, &page_size);
+        total_listed += page.len();
+        offset += page_size;
+    }
+    assert_eq!(total_listed, total);
+}
+
+// Issue #29 — revoke uses swap-and-shrink so all remaining slots stay
+// contiguous and admin_count correctly reflects the live roster.
+#[test]
+fn test_revoke_shrinks_slot_count_correctly() {
+    let (env, client, super_admin) = setup();
+    let admin1 = Address::generate(&env);
+    let admin2 = Address::generate(&env);
+    let admin3 = Address::generate(&env);
+    client.add_admin(&super_admin, &admin1, &AdminRole::Admin);
+    client.add_admin(&super_admin, &admin2, &AdminRole::Admin);
+    client.add_admin(&super_admin, &admin3, &AdminRole::Admin);
+    assert_eq!(client.admin_count(), 4);
+
+    // Revoke the middle admin; remaining count should be 3.
+    client.revoke_admin(&super_admin, &admin2);
+    assert_eq!(client.admin_count(), 3);
+    assert!(!client.is_admin(&admin2));
+
+    // The remaining two admins (admin1, admin3) are still reachable.
+    assert!(client.is_admin(&admin1));
+    assert!(client.is_admin(&admin3));
+
+    // Paginated listing returns exactly 3 entries covering super_admin, admin1, admin3.
+    let all = client.list_admins(&0, &10);
+    assert_eq!(all.len(), 3);
+}

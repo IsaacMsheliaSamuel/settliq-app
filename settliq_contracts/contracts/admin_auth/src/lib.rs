@@ -29,7 +29,13 @@ pub struct AdminUser {
 pub enum DataKey {
     SuperAdmin,
     Admin(Address),
-    AdminIndex,
+    /// Slot-based index entry: maps a sequential position to an admin address.
+    /// Each admin gets its own persistent key so the index never grows in a
+    /// single storage entry — no single value inflates with the roster size.
+    AdminAt(u32),
+    /// Scalar count of how many admin slots have been allocated.
+    /// Stored in instance storage as a single small integer.
+    AdminCount,
 }
 
 #[contracttype]
@@ -78,10 +84,11 @@ impl AdminAuthContract {
                 active: true,
             },
         );
-        // Initialize the admin index with the super_admin
-        let mut index: Vec<Address> = Vec::new(&env);
-        index.push_back(super_admin);
-        env.storage().instance().set(&DataKey::AdminIndex, &index);
+        // Slot 0 holds the super_admin address; count starts at 1.
+        env.storage()
+            .persistent()
+            .set(&DataKey::AdminAt(0), &super_admin);
+        env.storage().instance().set(&DataKey::AdminCount, &1u32);
     }
 
     /// Add an admin to the separate credential store. SuperAdmin only.
@@ -112,7 +119,7 @@ impl AdminAuthContract {
                 },
             );
         } else {
-            // New admin.
+            // New admin — write a fresh slot and bump the count.
             Self::save(
                 &env,
                 AdminUser {
@@ -121,14 +128,17 @@ impl AdminAuthContract {
                     active: true,
                 },
             );
-            // Add to index only if not already present.
-            let mut index: Vec<Address> = env
+            let count: u32 = env
                 .storage()
                 .instance()
-                .get(&DataKey::AdminIndex)
-                .unwrap_or_else(|| Vec::new(&env));
-            index.push_back(admin.clone());
-            env.storage().instance().set(&DataKey::AdminIndex, &index);
+                .get(&DataKey::AdminCount)
+                .unwrap_or(0);
+            env.storage()
+                .persistent()
+                .set(&DataKey::AdminAt(count), &admin.clone());
+            env.storage()
+                .instance()
+                .set(&DataKey::AdminCount, &(count + 1));
             env.events().publish(
                 ("ADMIN_AUTH", "admin_added"),
                 AdminAddedEvent {
@@ -158,15 +168,43 @@ impl AdminAuthContract {
         }
         env.storage().persistent().remove(&key);
 
-        // Remove from index
-        let mut index: Vec<Address> = env
+        // Swap-and-shrink: find the slot holding `admin`, replace it with the
+        // last slot's address, then remove the last slot and decrement the count.
+        // This keeps all slots contiguous without touching unrelated entries.
+        let count: u32 = env
             .storage()
             .instance()
-            .get(&DataKey::AdminIndex)
-            .unwrap_or_else(|| Vec::new(&env));
-        if let Some(pos) = index.first_index_of(&admin) {
-            index.remove(pos);
-            env.storage().instance().set(&DataKey::AdminIndex, &index);
+            .get(&DataKey::AdminCount)
+            .unwrap_or(0);
+        let mut found_slot: Option<u32> = None;
+        for i in 0..count {
+            let slot_addr: Address = env
+                .storage()
+                .persistent()
+                .get(&DataKey::AdminAt(i))
+                .unwrap();
+            if slot_addr == admin {
+                found_slot = Some(i);
+                break;
+            }
+        }
+        if let Some(slot) = found_slot {
+            let last = count - 1;
+            if slot != last {
+                // Move the last entry into the vacated slot.
+                let last_addr: Address = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::AdminAt(last))
+                    .unwrap();
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::AdminAt(slot), &last_addr);
+            }
+            env.storage().persistent().remove(&DataKey::AdminAt(last));
+            env.storage()
+                .instance()
+                .set(&DataKey::AdminCount, &last);
         }
 
         env.events().publish(
@@ -176,6 +214,10 @@ impl AdminAuthContract {
     }
 
     /// Transfer SuperAdmin rights to a new address. SuperAdmin only (#1042).
+    ///
+    /// After transfer the previous super admin's record is demoted to
+    /// `AdminRole::Admin` so that only the new holder retains SuperAdmin
+    /// credentials (#11).
     pub fn transfer_super_admin(env: Env, caller: Address, new_super_admin: Address) {
         caller.require_auth();
         Self::require_super_admin(&env, &caller);
@@ -184,6 +226,17 @@ impl AdminAuthContract {
 
         // Update the SuperAdmin key
         env.storage().instance().set(&DataKey::SuperAdmin, &new_super_admin);
+
+        // Demote the previous super admin to a regular Admin so they no longer
+        // hold SuperAdmin credentials (#11).
+        Self::save(
+            &env,
+            AdminUser {
+                admin: previous.clone(),
+                role: AdminRole::Admin,
+                active: true,
+            },
+        );
 
         // Ensure the new super admin has an AdminUser record with SuperAdmin role
         let is_new = !env.storage().persistent().has(&DataKey::Admin(new_super_admin.clone()));
@@ -196,13 +249,17 @@ impl AdminAuthContract {
             },
         );
         if is_new {
-            let mut index: Vec<Address> = env
+            let count: u32 = env
                 .storage()
                 .instance()
-                .get(&DataKey::AdminIndex)
-                .unwrap_or_else(|| Vec::new(&env));
-            index.push_back(new_super_admin.clone());
-            env.storage().instance().set(&DataKey::AdminIndex, &index);
+                .get(&DataKey::AdminCount)
+                .unwrap_or(0);
+            env.storage()
+                .persistent()
+                .set(&DataKey::AdminAt(count), &new_super_admin.clone());
+            env.storage()
+                .instance()
+                .set(&DataKey::AdminCount, &(count + 1));
         }
 
         env.events().publish(
@@ -216,9 +273,19 @@ impl AdminAuthContract {
 
     /// Deactivate an admin without removing its credential record. SuperAdmin
     /// only. `is_admin` returns false for a deactivated admin.
+    ///
+    /// The SuperAdmin cannot deactivate themselves: doing so would cause
+    /// `authorize(super_admin)` to fail and lock out all SuperAdmin-gated
+    /// operations (#12).
     pub fn deactivate_admin(env: Env, caller: Address, admin: Address) {
         caller.require_auth();
         Self::require_super_admin(&env, &caller);
+
+        // Prevent the SuperAdmin from deactivating themselves (#12).
+        let super_admin: Address = env.storage().instance().get(&DataKey::SuperAdmin).unwrap();
+        if admin == super_admin {
+            panic!("cannot deactivate super admin");
+        }
 
         let key = DataKey::Admin(admin.clone());
         let mut user: AdminUser = env
@@ -257,30 +324,34 @@ impl AdminAuthContract {
 
     /// Paginated list of current admin addresses (#1044).
     /// Returns up to `page_size` entries starting at `offset`.
+    /// Reads are bounded by `page_size`; the full roster is never loaded.
     pub fn list_admins(env: Env, offset: u32, page_size: u32) -> Vec<Address> {
-        let index: Vec<Address> = env
+        let count: u32 = env
             .storage()
             .instance()
-            .get(&DataKey::AdminIndex)
-            .unwrap_or_else(|| Vec::new(&env));
-        let len = index.len();
-        let start = offset.min(len);
-        let end = (start + page_size).min(len);
+            .get(&DataKey::AdminCount)
+            .unwrap_or(0);
+        let start = offset.min(count);
+        let end = (start + page_size).min(count);
         let mut page: Vec<Address> = Vec::new(&env);
         for i in start..end {
-            page.push_back(index.get(i).unwrap());
+            if let Some(addr) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Address>(&DataKey::AdminAt(i))
+            {
+                page.push_back(addr);
+            }
         }
         page
     }
 
-    /// Total number of admins currently registered.
+    /// Total number of admin slots currently allocated.
     pub fn admin_count(env: Env) -> u32 {
-        let index: Vec<Address> = env
-            .storage()
+        env.storage()
             .instance()
-            .get(&DataKey::AdminIndex)
-            .unwrap_or_else(|| Vec::new(&env));
-        index.len()
+            .get(&DataKey::AdminCount)
+            .unwrap_or(0)
     }
 
     fn save(env: &Env, user: AdminUser) {

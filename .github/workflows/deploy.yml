@@ -204,17 +204,21 @@ jobs:
           # --- no constructor ------------------------------------------------
           deploy_contract payment_request       wasm/payment_request.wasm
 
-          # --- no constructor, but has a required one-time init() -----------
-          # batch_payments has no __constructor; its storage (admin, min/max
-          # amount limits) is only set up by calling init() after deploy. Skip
-          # this and every create_batch/set_limits/get_limits call panics with
-          # "contract not initialized".
-          deploy_contract batch_payments        wasm/batch_payments.wasm
+          # liquidity_router doesn't use Soroban's `__constructor` convention,
+          # so its one-time admin setup has to be invoked as a separate call
+          # right after deploy — otherwise the instance sits with no
+          # DataKey::Admin set until someone calls `initialize` out-of-band.
           stellar contract invoke \
-            --id "$batch_payments_id" \
+            --id "$liquidity_router_id" \
             --source deployer \
             --network testnet \
-            -- init \
+            -- initialize \
+            --admin "$DEPLOY_ADMIN"
+
+          # --- constructor with amount limits --------------------------------
+          # batch_payments now uses `__constructor` for atomic initialization
+          # (issue #57), so admin and limits are passed directly to deploy.
+          deploy_contract batch_payments        wasm/batch_payments.wasm \
             --admin "$DEPLOY_ADMIN" \
             --min_amount "$BATCH_PAYMENTS_MIN_AMOUNT" \
             --max_amount "$BATCH_PAYMENTS_MAX_AMOUNT"
@@ -421,17 +425,21 @@ jobs:
           # --- no constructor ------------------------------------------------
           deploy_contract payment_request       wasm/payment_request.wasm
 
-          # --- no constructor, but has a required one-time init() -----------
-          # batch_payments has no __constructor; its storage (admin, min/max
-          # amount limits) is only set up by calling init() after deploy. Skip
-          # this and every create_batch/set_limits/get_limits call panics with
-          # "contract not initialized".
-          deploy_contract batch_payments        wasm/batch_payments.wasm
+          # liquidity_router doesn't use Soroban's `__constructor` convention,
+          # so its one-time admin setup has to be invoked as a separate call
+          # right after deploy — otherwise the instance sits with no
+          # DataKey::Admin set until someone calls `initialize` out-of-band.
           stellar contract invoke \
-            --id "$batch_payments_id" \
+            --id "$liquidity_router_id" \
             --source deployer \
             --network mainnet \
-            -- init \
+            -- initialize \
+            --admin "$DEPLOY_ADMIN"
+
+          # --- constructor with amount limits --------------------------------
+          # batch_payments now uses `__constructor` for atomic initialization
+          # (issue #57), so admin and limits are passed directly to deploy.
+          deploy_contract batch_payments        wasm/batch_payments.wasm \
             --admin "$DEPLOY_ADMIN" \
             --min_amount "$BATCH_PAYMENTS_MIN_AMOUNT" \
             --max_amount "$BATCH_PAYMENTS_MAX_AMOUNT"

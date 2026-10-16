@@ -26,10 +26,14 @@
 mod test;
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, vec, Address, Bytes, BytesN, Env, String, Vec,
+    contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, String, Vec,
 };
 
 const MIN_DELAY_LEDGERS: u32 = 17_280;
+// ~14 days at 5 s/ledger (14 * 24 * 60 * 60 / 5 = 241_920).
+// A pending change that is not applied within this window after its
+// execute_after ledger is considered stale and must be re-scheduled.
+const GRACE_PERIOD_LEDGERS: u32 = 241_920;
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -58,6 +62,12 @@ pub enum DataKey {
     Counter,
     Change(BytesN<32>),
     PendingList,
+    /// Pending admin address proposed via `propose_rotate_admin`, together with
+    /// the ledger sequence number after which `accept_rotate_admin` may be
+    /// called.  Cleared once the rotation is accepted (#9).
+    PendingAdmin,
+    /// The earliest ledger at which the pending admin rotation may be accepted.
+    PendingAdminExecuteAfter,
 }
 
 // ---------------------------------------------------------------------------
@@ -89,6 +99,18 @@ struct ChangeCancelledEvent {
 struct AdminRotatedEvent {
     old_admin: Address,
     new_admin: Address,
+}
+
+#[contracttype]
+struct AdminRotationProposedEvent {
+    current_admin: Address,
+    pending_admin: Address,
+    execute_after: u32,
+}
+
+#[contracttype]
+struct AdminRotationCancelledEvent {
+    pending_admin: Address,
 }
 
 // ---------------------------------------------------------------------------
@@ -196,6 +218,9 @@ impl AdminTimelockContract {
         if env.ledger().sequence() < change.execute_after {
             panic!("Delay period has not elapsed");
         }
+        if env.ledger().sequence() > change.execute_after.saturating_add(GRACE_PERIOD_LEDGERS) {
+            panic!("Change execution window has expired");
+        }
 
         change.status = ChangeStatus::Applied;
         env.storage()
@@ -258,18 +283,112 @@ impl AdminTimelockContract {
             .remove(&DataKey::Change(change_id));
     }
 
-    /// Transfer admin authority to a new address. Irreversible without the new admin's key.
-    pub fn rotate_admin(env: Env, caller: Address, new_admin: Address) {
+    /// Propose a timelocked admin rotation. The current admin schedules a
+    /// pending rotation subject to at least `MIN_DELAY_LEDGERS` delay, matching
+    /// the same minimum enforced by `schedule_change` (#9).
+    ///
+    /// The rotation does not take effect until the current admin calls
+    /// `accept_rotate_admin` after the delay has elapsed. The pending rotation
+    /// may be cancelled at any time before acceptance by calling
+    /// `cancel_rotate_admin`.
+    pub fn propose_rotate_admin(
+        env: Env,
+        caller: Address,
+        new_admin: Address,
+        delay_ledgers: u32,
+    ) {
         caller.require_auth();
         Self::require_admin(&env, &caller);
 
+        if delay_ledgers < MIN_DELAY_LEDGERS {
+            panic!("delay_ledgers must be >= 17280 (24 h)");
+        }
+
+        let now = env.ledger().sequence();
+        let execute_after = now.saturating_add(delay_ledgers);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdminExecuteAfter, &execute_after);
+
+        env.events().publish(
+            ("TIMELOCK", "admin_rotation_proposed"),
+            AdminRotationProposedEvent {
+                current_admin: caller,
+                pending_admin: new_admin,
+                execute_after,
+            },
+        );
+    }
+
+    /// Complete a pending admin rotation after the delay has elapsed.
+    /// Only the current admin may call this, ensuring the rotation cannot be
+    /// forced by a third party (#9).
+    pub fn accept_rotate_admin(env: Env, caller: Address) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+
+        let new_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .expect("No pending admin rotation");
+
+        let execute_after: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdminExecuteAfter)
+            .expect("No pending admin rotation");
+
+        if env.ledger().sequence() < execute_after {
+            panic!("Delay period has not elapsed");
+        }
+
         let old_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+
         env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingAdminExecuteAfter);
 
         env.events().publish(
             ("TIMELOCK", "admin_rotated"),
             AdminRotatedEvent { old_admin, new_admin },
         );
+    }
+
+    /// Cancel a pending admin rotation before it is accepted.
+    /// Only the current admin may cancel (#9).
+    pub fn cancel_rotate_admin(env: Env, caller: Address) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .expect("No pending admin rotation");
+
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingAdminExecuteAfter);
+
+        env.events().publish(
+            ("TIMELOCK", "admin_rotation_cancelled"),
+            AdminRotationCancelledEvent {
+                pending_admin: pending,
+            },
+        );
+    }
+
+    /// Return the pending admin address if a rotation has been proposed.
+    pub fn get_pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
     }
 
     // ------------------------------------------------------------------

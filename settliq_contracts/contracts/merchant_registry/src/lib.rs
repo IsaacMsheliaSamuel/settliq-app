@@ -200,6 +200,28 @@ impl MerchantRegistryContract {
         env.storage().instance().get(&DataKey::PendingAdmin)
     }
 
+    /// Cancel an outstanding admin transfer proposal.  Callable by the
+    /// current admin only.
+    ///
+    /// Removes `DataKey::PendingAdmin` from storage so the previously proposed
+    /// address can no longer invoke `accept_admin`.  Emits an audit event so
+    /// the cancellation is visible on-chain.
+    pub fn cancel_admin_proposal(env: Env, caller: Address) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+
+        assert!(
+            env.storage().instance().has(&DataKey::PendingAdmin),
+            "No pending admin proposal"
+        );
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+
+        env.events().publish(
+            ("REGISTRY", "admin_transfer_cancelled"),
+            caller,
+        );
+    }
+
     /// Read the active admin address.
     pub fn get_admin(env: Env) -> Address {
         env.storage()
@@ -267,6 +289,10 @@ impl MerchantRegistryContract {
             .persistent()
             .get(&key)
             .expect("Merchant not found");
+
+        if record.status == MerchantStatus::Terminated {
+            panic!("Cannot modify terminated merchant");
+        }
 
         let old_name = record.name.clone();
         record.name = name.clone();
@@ -404,31 +430,16 @@ impl MerchantRegistryContract {
             .get(&key)
             .expect("Merchant not found");
 
+        if record.status == MerchantStatus::Terminated {
+            panic!("Cannot modify terminated merchant");
+        }
+
         record.fee_bps = fee_bps;
         env.storage().persistent().set(&key, &record);
 
         env.events().publish(
             ("REGISTRY", "fee_tier_updated"),
             FeeTierUpdatedEvent { merchant: merchant.clone(), fee_bps },
-        );
-    }
-
-    /// Transfer admin rights to a new address.  Callable by the current admin.
-    pub fn transfer_admin(env: Env, caller: Address, new_admin: Address) {
-        caller.require_auth();
-        Self::require_admin(&env, &caller);
-
-        let old_admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .expect("Admin not set");
-
-        env.storage().instance().set(&DataKey::Admin, &new_admin);
-
-        env.events().publish(
-            ("REGISTRY", "admin_transferred"),
-            AdminTransferredEvent { old_admin, new_admin },
         );
     }
 
@@ -459,13 +470,22 @@ impl MerchantRegistryContract {
             .unwrap_or(0)
     }
 
-    /// Paginated listing of registered merchants.
+    /// Paginated listing of active (non-terminated) registered merchants.
     ///
-    /// Cost is bounded by `page_size`, not by the total number of merchants:
-    /// the index is stored as one entry per position (`DataKey::MerchantAt`),
-    /// so only the `page_size` slots in the requested window are read. The
-    /// full index is never loaded, and no per-entry persistent record read is
-    /// performed — each slot already holds the merchant's address.
+    /// The index slot at `DataKey::MerchantAt(i)` is never removed when a
+    /// merchant is terminated — removing an arbitrary slot would require
+    /// rewriting all higher-index slots, making termination O(N).  Instead
+    /// this query reads each slot and filters out any address whose status is
+    /// `Terminated`, so terminated merchants no longer appear in the returned
+    /// page even though they remain in the underlying index.
+    ///
+    /// The page is filled with up to `page_size` *active* addresses, scanning
+    /// forward through the raw index as needed.  Callers must use page numbers
+    /// relative to the active subset, not the raw index.
+    ///
+    /// Cost in the worst case is bounded by a scan over all remaining index
+    /// slots plus one persistent record read per slot.  For typical workloads
+    /// (low termination rate) this is effectively O(page_size).
     pub fn merchants(env: Env, page: u32, page_size: u32) -> Vec<Address> {
         let mut result = Vec::new(&env);
         if page_size == 0 {
@@ -478,20 +498,32 @@ impl MerchantRegistryContract {
             .get(&DataKey::MerchantCount)
             .unwrap_or(0);
 
-        let start = page.saturating_mul(page_size);
-        if start >= total {
-            return result;
-        }
+        // Number of active merchants to skip before we start collecting.
+        let skip = page.saturating_mul(page_size);
+        let mut skipped: u32 = 0;
+        let mut i: u32 = 0;
 
-        let end = start.saturating_add(page_size).min(total);
-        let mut i = start;
-        while i < end {
+        while i < total && (result.len() as u32) < page_size {
             if let Some(addr) = env
                 .storage()
                 .persistent()
                 .get::<DataKey, Address>(&DataKey::MerchantAt(i))
             {
-                result.push_back(addr);
+                // Read the merchant record to inspect status.
+                let is_terminated = env
+                    .storage()
+                    .persistent()
+                    .get::<DataKey, MerchantRecord>(&DataKey::Merchant(addr.clone()))
+                    .map(|r| r.status == MerchantStatus::Terminated)
+                    .unwrap_or(false);
+
+                if !is_terminated {
+                    if skipped < skip {
+                        skipped += 1;
+                    } else {
+                        result.push_back(addr);
+                    }
+                }
             }
             i += 1;
         }

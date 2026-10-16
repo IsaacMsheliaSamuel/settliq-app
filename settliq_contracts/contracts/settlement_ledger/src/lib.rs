@@ -43,8 +43,11 @@ enum DataKey {
     MerchantPage(Address, u32),
     /// Number of settlement IDs stored for a merchant.
     MerchantCount(Address),
-    /// Vec<BytesN<32>> — platform-wide ordered settlement IDs.
-    AllIndex,
+    /// Vec<BytesN<32>> — one bounded page of platform-wide settlement IDs.
+    /// Replaces the former single unbounded `AllIndex` entry.
+    AllPage(u32),
+    /// Scalar count of all platform-wide settlements recorded so far.
+    TotalCount,
     /// A void marker keyed by the original payment ID; never overwrites it.
     Void(BytesN<32>),
 }
@@ -140,13 +143,25 @@ impl SettlementLedgerContract {
         env.storage().persistent().set(&page_key, &index);
         env.storage().persistent().set(&count_key, &(count + 1));
 
-        let mut all: Vec<BytesN<32>> = env
+        // Append to one bounded platform-wide page so recording a settlement
+        // never rewrites the full global index.  Uses the same page-size
+        // strategy as the per-merchant index above.
+        let total_count_key = DataKey::TotalCount;
+        let total_count: u32 = env
             .storage()
             .persistent()
-            .get(&DataKey::AllIndex)
+            .get(&total_count_key)
+            .unwrap_or(0);
+        let all_page = total_count / PAGE_SIZE;
+        let all_page_key = DataKey::AllPage(all_page);
+        let mut all_index: Vec<BytesN<32>> = env
+            .storage()
+            .persistent()
+            .get(&all_page_key)
             .unwrap_or_else(|| vec![&env]);
-        all.push_back(payment_id.clone());
-        env.storage().persistent().set(&DataKey::AllIndex, &all);
+        all_index.push_back(payment_id.clone());
+        env.storage().persistent().set(&all_page_key, &all_index);
+        env.storage().persistent().set(&total_count_key, &(total_count + 1));
 
         env.events().publish(
             ("SETTLEMENT_LEDGER", "settlement_recorded"),
@@ -226,15 +241,24 @@ impl SettlementLedgerContract {
             .unwrap_or(0)
     }
 
-    /// Paginated platform-wide settlement list. This avoids off-chain event
-    /// reconstruction for accounting while retaining the merchant index.
+    /// Paginated platform-wide settlement list. Reads only the requested page
+    /// key (`AllPage(page)`) — O(1) with respect to total settlement history.
     pub fn list_all_settlements(env: Env, page: u32) -> Vec<SettlementRecord> {
-        let index: Vec<BytesN<32>> = env.storage().persistent().get(&DataKey::AllIndex).unwrap_or_else(|| vec![&env]);
+        let total_count: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TotalCount)
+            .unwrap_or(0);
         let start = page.saturating_mul(PAGE_SIZE);
-        if start >= index.len() { return vec![&env]; }
-        let end = (start + PAGE_SIZE).min(index.len());
+        if start >= total_count { return vec![&env]; }
+        let page_key = DataKey::AllPage(page);
+        let index: Vec<BytesN<32>> = env
+            .storage()
+            .persistent()
+            .get(&page_key)
+            .unwrap_or_else(|| vec![&env]);
         let mut results = vec![&env];
-        for i in start..end {
+        for i in 0..index.len() {
             let payment_id = index.get(i).unwrap();
             results.push_back(env.storage().persistent().get(&DataKey::Settlement(payment_id)).unwrap());
         }
@@ -242,7 +266,10 @@ impl SettlementLedgerContract {
     }
 
     pub fn total_settlement_count(env: Env) -> u32 {
-        env.storage().persistent().get::<_, Vec<BytesN<32>>>(&DataKey::AllIndex).map(|index| index.len()).unwrap_or(0)
+        env.storage()
+            .persistent()
+            .get::<_, u32>(&DataKey::TotalCount)
+            .unwrap_or(0)
     }
 
     fn require_admin(env: &Env, caller: &Address) {
