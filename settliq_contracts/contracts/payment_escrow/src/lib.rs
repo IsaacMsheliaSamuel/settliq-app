@@ -64,6 +64,7 @@ pub enum DataKey {
     Version,
     MaxDisputeWindowLedgers,
     MaxTtlLedgers,
+    IsPaused,
 }
 
 #[contracttype]
@@ -422,6 +423,7 @@ impl PaymentEscrowContract {
         asset_type: AssetType,
     ) -> BytesN<32> {
         customer.require_auth();
+        Self::require_not_paused(&env);
 
         if amount <= 0 {
             panic!("Amount must be > 0");
@@ -503,6 +505,7 @@ impl PaymentEscrowContract {
     pub fn release(env: Env, caller: Address, payment_id: BytesN<32>) {
         caller.require_auth();
         Self::require_admin(&env, &caller);
+        Self::require_not_paused(&env);
 
         let mut payment = Self::get_payment(env.clone(), payment_id.clone());
         Self::require_releasable(&env, &payment);
@@ -531,6 +534,7 @@ impl PaymentEscrowContract {
     pub fn release_partial(env: Env, caller: Address, payment_id: BytesN<32>, amount: i128) {
         caller.require_auth();
         Self::require_admin(&env, &caller);
+        Self::require_not_paused(&env);
 
         if amount <= 0 {
             panic!("Release amount must be > 0");
@@ -592,6 +596,7 @@ impl PaymentEscrowContract {
 
     pub fn refund(env: Env, payment_id: BytesN<32>) {
         let mut payment = Self::get_payment(env.clone(), payment_id.clone());
+        Self::require_not_paused(&env);
         Self::require_expirable(&env, &payment);
 
         let remaining = Self::remaining_amount(&payment);
@@ -628,6 +633,7 @@ impl PaymentEscrowContract {
     /// and `test_dispute_after_partial_release_resolves_to_merchant`.
     pub fn dispute(env: Env, caller: Address, payment_id: BytesN<32>, _reason: String) {
         caller.require_auth();
+        Self::require_not_paused(&env);
 
         let mut payment = Self::get_payment(env.clone(), payment_id.clone());
         if payment.status == PaymentStatus::Disputed {
@@ -687,7 +693,9 @@ impl PaymentEscrowContract {
         } else {
             PaymentStatus::Expired
         };
-        payment.released_amount = payment.amount;
+        if winner == payment.merchant {
+            payment.released_amount = payment.amount;
+        }
         env.storage()
             .persistent()
             .set(&DataKey::Payment(payment_id.clone()), &payment);
@@ -874,12 +882,56 @@ impl PaymentEscrowContract {
         env.storage()
             .instance()
             .set(&DataKey::EmergencyLastDrainLedger, &current_ledger);
+        env.storage()
+            .instance()
+            .set(&DataKey::IsPaused, &true);
         env.events().publish(
             ("ESCROW", "emergency_drain"),
             EmergencyDrainEvent { amount, caller },
         );
 
         amount
+    }
+
+    /// Resume normal contract operations after an emergency drain. Requires
+    /// admin authorization plus co-authorization from two distinct emergency
+    /// signers to ensure the same multisig threshold used for draining is also
+    /// required for unpausing. Callers must have re-funded the contract before
+    /// invoking this entrypoint so that active escrow payments can be settled.
+    pub fn resume(env: Env, caller: Address, signer_one: Address, signer_two: Address) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+
+        if signer_one == signer_two {
+            panic!("Emergency signers must be distinct");
+        }
+        if signer_one != caller {
+            signer_one.require_auth();
+        }
+        if signer_two != caller {
+            signer_two.require_auth();
+        }
+        Self::require_emergency_signer(&env, &signer_one);
+        Self::require_emergency_signer(&env, &signer_two);
+
+        if !env
+            .storage()
+            .instance()
+            .get::<DataKey, bool>(&DataKey::IsPaused)
+            .unwrap_or(false)
+        {
+            panic!("Contract is not paused");
+        }
+
+        env.storage().instance().set(&DataKey::IsPaused, &false);
+    }
+
+    /// Return whether the contract is currently paused due to an emergency drain.
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get::<DataKey, bool>(&DataKey::IsPaused)
+            .unwrap_or(false)
     }
 
     fn require_admin(env: &Env, caller: &Address) {
@@ -950,6 +1002,17 @@ impl PaymentEscrowContract {
             .unwrap();
         if signers.iter().all(|configured| configured != *signer) {
             panic!("Not emergency signer");
+        }
+    }
+
+    fn require_not_paused(env: &Env) {
+        if env
+            .storage()
+            .instance()
+            .get::<DataKey, bool>(&DataKey::IsPaused)
+            .unwrap_or(false)
+        {
+            panic!("Contract paused due to emergency drain");
         }
     }
 }

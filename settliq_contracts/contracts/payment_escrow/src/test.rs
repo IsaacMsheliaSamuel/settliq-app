@@ -528,7 +528,9 @@ fn test_resolve_dispute_to_customer() {
 
     let payment = client.get_payment(&payment_id);
     assert_eq!(payment.status, PaymentStatus::Expired);
-    assert_eq!(payment.released_amount, 250_000_000);
+    // Customer wins: no funds were ever released to the merchant, so
+    // released_amount remains 0 (issue #51 fix).
+    assert_eq!(payment.released_amount, 0);
 
     let token_client = token::Client::new(&env, &usdc);
     assert_eq!(token_client.balance(&customer), 1_000_000_000);
@@ -728,11 +730,11 @@ fn test_emergency_drain_cooldown_prevents_repeated_drain() {
     let (
         env,
         client,
-        _contract_id,
-        _admin,
+        contract_id,
+        admin,
         customer,
         merchant,
-        _usdc,
+        usdc,
         _xlm,
         emergency_signer_one,
         emergency_signer_two,
@@ -748,8 +750,16 @@ fn test_emergency_drain_cooldown_prevents_repeated_drain() {
         &emergency_signer_two,
     );
 
+    // The drain paused the contract.  Resume it and re-fund so we can deposit
+    // a second payment, then attempt a second drain — which must be blocked by
+    // the cooldown, not the pause.
+    token::StellarAssetClient::new(&env, &usdc).mint(&contract_id, &100_000_000i128);
+    client.resume(&admin, &emergency_signer_one, &emergency_signer_two);
+
     let payment_id_b = make_id(&env, 54);
     deposit_default_ttl(&client, &customer, &payment_id_b, &merchant, 100_000_000i128);
+    // This second drain attempt must panic with the cooldown message because
+    // the cooldown period has not yet elapsed.
     client.emergency_drain(
         &emergency_signer_one,
         &emergency_signer_one,
@@ -781,7 +791,10 @@ fn test_dispute_after_partial_release_resolves_to_customer() {
 
     let payment = client.get_payment(&payment_id);
     assert_eq!(payment.status, PaymentStatus::Expired);
-    assert_eq!(payment.released_amount, 250_000_000);
+    // Customer wins the dispute over the remaining 150M. The 100M already
+    // released to the merchant is not clawed back, so released_amount stays
+    // at 100M (issue #51 fix).
+    assert_eq!(payment.released_amount, 100_000_000);
 
     let token_client = token::Client::new(&env, &usdc);
     assert_eq!(token_client.balance(&customer), 900_000_000);
