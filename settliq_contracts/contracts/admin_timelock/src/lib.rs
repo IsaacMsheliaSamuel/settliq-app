@@ -30,6 +30,10 @@ use soroban_sdk::{
 };
 
 const MIN_DELAY_LEDGERS: u32 = 17_280;
+// ~14 days at 5 s/ledger (14 * 24 * 60 * 60 / 5 = 241_920).
+// A pending change that is not applied within this window after its
+// execute_after ledger is considered stale and must be re-scheduled.
+const GRACE_PERIOD_LEDGERS: u32 = 241_920;
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -195,6 +199,9 @@ impl AdminTimelockContract {
         }
         if env.ledger().sequence() < change.execute_after {
             panic!("Delay period has not elapsed");
+        }
+        if env.ledger().sequence() > change.execute_after.saturating_add(GRACE_PERIOD_LEDGERS) {
+            panic!("Change execution window has expired");
         }
 
         change.status = ChangeStatus::Applied;
