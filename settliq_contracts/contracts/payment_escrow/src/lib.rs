@@ -64,6 +64,7 @@ pub enum DataKey {
     Version,
     MaxDisputeWindowLedgers,
     MaxTtlLedgers,
+    IsPaused,
 }
 
 #[contracttype]
@@ -109,6 +110,13 @@ struct UpgradeScheduledEvent {
 #[contracttype]
 struct UpgradeCancelledEvent {
     new_wasm_hash: BytesN<32>,
+}
+
+#[contracttype]
+struct DisputeSplitResolvedEvent {
+    payment_id: BytesN<32>,
+    merchant_amount: i128,
+    customer_amount: i128,
 }
 
 /// Defaults used until the admin overrides them via `set_max_dispute_window_ledgers`
@@ -318,6 +326,9 @@ impl PaymentEscrowContract {
                 "removed"
             }
             (prev, Some(reg)) => {
+                if reg == &env.current_contract_address() {
+                    panic!("Registry cannot be self address");
+                }
                 env.storage().instance().set(&DataKey::RegistryContract, reg);
                 if prev.is_some() { "changed" } else { "set" }
             }
@@ -333,12 +344,17 @@ impl PaymentEscrowContract {
         );
     }
 
-    /// Update the maximum dispute window (in ledgers). Admin-only; must be > 0.
+    /// Update the maximum dispute window (in ledgers). Admin-only; must be > 0
+    /// and must not exceed max_ttl_ledgers.
     pub fn set_max_dispute_window_ledgers(env: Env, caller: Address, value: u32) {
         caller.require_auth();
         Self::require_admin(&env, &caller);
         if value == 0 {
             panic!("Max dispute window must be > 0");
+        }
+        let max_ttl = Self::get_max_ttl_ledgers(env.clone());
+        if value > max_ttl {
+            panic!("Max dispute window cannot exceed max TTL");
         }
         let previous = Self::get_max_dispute_window_ledgers(env.clone());
         env.storage()
@@ -350,18 +366,44 @@ impl PaymentEscrowContract {
         );
     }
 
-    /// Update the maximum payment TTL (in ledgers). Admin-only; must be > 0.
-    /// Only affects future deposits.
+    /// Update the maximum payment TTL (in ledgers). Admin-only; must be > 0
+    /// and must not be less than default_ttl_ledgers.  Only affects future deposits.
     pub fn set_max_ttl_ledgers(env: Env, caller: Address, value: u32) {
         caller.require_auth();
         Self::require_admin(&env, &caller);
         if value == 0 {
             panic!("Max TTL must be > 0");
         }
+        let default_ttl = Self::get_default_ttl_ledgers(env.clone());
+        if value < default_ttl {
+            panic!("Max TTL cannot be less than default TTL");
+        }
         let previous = Self::get_max_ttl_ledgers(env.clone());
         env.storage().instance().set(&DataKey::MaxTtlLedgers, &value);
         env.events().publish(
             ("CONFIG", "max_ttl"),
+            LimitUpdatedEvent { previous, new: value },
+        );
+    }
+
+    /// Update the default payment TTL (in ledgers). Admin-only; must be > 0
+    /// and must not exceed max_ttl_ledgers.  Only affects future deposits.
+    pub fn set_default_ttl_ledgers(env: Env, caller: Address, value: u32) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+        if value == 0 {
+            panic!("Default TTL must be > 0");
+        }
+        let max_ttl = Self::get_max_ttl_ledgers(env.clone());
+        if value > max_ttl {
+            panic!("Default TTL cannot exceed max TTL");
+        }
+        let previous = Self::get_default_ttl_ledgers(env.clone());
+        env.storage()
+            .instance()
+            .set(&DataKey::DefaultTtlLedgers, &value);
+        env.events().publish(
+            ("CONFIG", "default_ttl"),
             LimitUpdatedEvent { previous, new: value },
         );
     }
@@ -381,6 +423,7 @@ impl PaymentEscrowContract {
         asset_type: AssetType,
     ) -> BytesN<32> {
         customer.require_auth();
+        Self::require_not_paused(&env);
 
         if amount <= 0 {
             panic!("Amount must be > 0");
@@ -467,6 +510,7 @@ impl PaymentEscrowContract {
     pub fn release(env: Env, caller: Address, payment_id: BytesN<32>) {
         caller.require_auth();
         Self::require_admin(&env, &caller);
+        Self::require_not_paused(&env);
 
         let mut payment = Self::get_payment(env.clone(), payment_id.clone());
         Self::require_releasable(&env, &payment);
@@ -495,6 +539,7 @@ impl PaymentEscrowContract {
     pub fn release_partial(env: Env, caller: Address, payment_id: BytesN<32>, amount: i128) {
         caller.require_auth();
         Self::require_admin(&env, &caller);
+        Self::require_not_paused(&env);
 
         if amount <= 0 {
             panic!("Release amount must be > 0");
@@ -561,6 +606,7 @@ impl PaymentEscrowContract {
 
     pub fn refund(env: Env, payment_id: BytesN<32>) {
         let mut payment = Self::get_payment(env.clone(), payment_id.clone());
+        Self::require_not_paused(&env);
         Self::require_expirable(&env, &payment);
 
         let remaining = Self::remaining_amount(&payment);
@@ -597,6 +643,7 @@ impl PaymentEscrowContract {
     /// and `test_dispute_after_partial_release_resolves_to_merchant`.
     pub fn dispute(env: Env, caller: Address, payment_id: BytesN<32>, _reason: String) {
         caller.require_auth();
+        Self::require_not_paused(&env);
 
         let mut payment = Self::get_payment(env.clone(), payment_id.clone());
         if payment.status == PaymentStatus::Disputed {
@@ -666,7 +713,9 @@ impl PaymentEscrowContract {
         } else {
             PaymentStatus::Expired
         };
-        payment.released_amount = payment.amount;
+        if winner == payment.merchant {
+            payment.released_amount = payment.amount;
+        }
         env.storage()
             .persistent()
             .set(&DataKey::Payment(payment_id.clone()), &payment);
@@ -681,6 +730,77 @@ impl PaymentEscrowContract {
             EscrowStateEvent {
                 payment_id,
                 amount: remaining,
+            },
+        );
+    }
+
+    /// Resolve a dispute with a split allocation between merchant and customer.
+    /// Admin-only.  `merchant_amount` and `customer_amount` must both be >= 0
+    /// and their sum must exactly equal the remaining escrow balance.  Both
+    /// transfers execute atomically before the payment record is updated.
+    pub fn resolve_dispute_split(
+        env: Env,
+        caller: Address,
+        payment_id: BytesN<32>,
+        merchant_amount: i128,
+        customer_amount: i128,
+    ) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+
+        if merchant_amount < 0 {
+            panic!("Merchant amount must be >= 0");
+        }
+        if customer_amount < 0 {
+            panic!("Customer amount must be >= 0");
+        }
+
+        let mut payment = Self::get_payment(env.clone(), payment_id.clone());
+        if payment.status != PaymentStatus::Disputed {
+            panic!("Dispute is not open");
+        }
+
+        let remaining = Self::remaining_amount(&payment);
+        if remaining <= 0 {
+            panic!("Payment fully released");
+        }
+
+        let total = merchant_amount
+            .checked_add(customer_amount)
+            .expect("allocation overflow");
+        if total != remaining {
+            panic!("Split amounts must sum to remaining balance");
+        }
+
+        if merchant_amount > 0 {
+            Self::transfer_from_contract(
+                &env,
+                &payment.merchant,
+                merchant_amount,
+                &payment.asset_type,
+            );
+        }
+        if customer_amount > 0 {
+            Self::transfer_from_contract(
+                &env,
+                &payment.customer,
+                customer_amount,
+                &payment.asset_type,
+            );
+        }
+
+        payment.released_amount = payment.amount;
+        payment.status = PaymentStatus::Released;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Payment(payment_id.clone()), &payment);
+
+        env.events().publish(
+            ("ESCROW", "dispute_split_resolved"),
+            DisputeSplitResolvedEvent {
+                payment_id,
+                merchant_amount,
+                customer_amount,
             },
         );
     }
@@ -782,12 +902,56 @@ impl PaymentEscrowContract {
         env.storage()
             .instance()
             .set(&DataKey::EmergencyLastDrainLedger, &current_ledger);
+        env.storage()
+            .instance()
+            .set(&DataKey::IsPaused, &true);
         env.events().publish(
             ("ESCROW", "emergency_drain"),
             EmergencyDrainEvent { amount, caller },
         );
 
         amount
+    }
+
+    /// Resume normal contract operations after an emergency drain. Requires
+    /// admin authorization plus co-authorization from two distinct emergency
+    /// signers to ensure the same multisig threshold used for draining is also
+    /// required for unpausing. Callers must have re-funded the contract before
+    /// invoking this entrypoint so that active escrow payments can be settled.
+    pub fn resume(env: Env, caller: Address, signer_one: Address, signer_two: Address) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+
+        if signer_one == signer_two {
+            panic!("Emergency signers must be distinct");
+        }
+        if signer_one != caller {
+            signer_one.require_auth();
+        }
+        if signer_two != caller {
+            signer_two.require_auth();
+        }
+        Self::require_emergency_signer(&env, &signer_one);
+        Self::require_emergency_signer(&env, &signer_two);
+
+        if !env
+            .storage()
+            .instance()
+            .get::<DataKey, bool>(&DataKey::IsPaused)
+            .unwrap_or(false)
+        {
+            panic!("Contract is not paused");
+        }
+
+        env.storage().instance().set(&DataKey::IsPaused, &false);
+    }
+
+    /// Return whether the contract is currently paused due to an emergency drain.
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get::<DataKey, bool>(&DataKey::IsPaused)
+            .unwrap_or(false)
     }
 
     fn require_admin(env: &Env, caller: &Address) {
@@ -858,6 +1022,17 @@ impl PaymentEscrowContract {
             .unwrap();
         if signers.iter().all(|configured| configured != *signer) {
             panic!("Not emergency signer");
+        }
+    }
+
+    fn require_not_paused(env: &Env) {
+        if env
+            .storage()
+            .instance()
+            .get::<DataKey, bool>(&DataKey::IsPaused)
+            .unwrap_or(false)
+        {
+            panic!("Contract paused due to emergency drain");
         }
     }
 }

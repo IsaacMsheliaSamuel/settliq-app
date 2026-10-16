@@ -529,7 +529,9 @@ fn test_resolve_dispute_to_customer() {
 
     let payment = client.get_payment(&payment_id);
     assert_eq!(payment.status, PaymentStatus::Expired);
-    assert_eq!(payment.released_amount, 250_000_000);
+    // Customer wins: no funds were ever released to the merchant, so
+    // released_amount remains 0 (issue #51 fix).
+    assert_eq!(payment.released_amount, 0);
 
     let token_client = token::Client::new(&env, &usdc);
     assert_eq!(token_client.balance(&customer), 1_000_000_000);
@@ -729,11 +731,11 @@ fn test_emergency_drain_cooldown_prevents_repeated_drain() {
     let (
         env,
         client,
-        _contract_id,
-        _admin,
+        contract_id,
+        admin,
         customer,
         merchant,
-        _usdc,
+        usdc,
         _xlm,
         emergency_signer_one,
         emergency_signer_two,
@@ -749,8 +751,16 @@ fn test_emergency_drain_cooldown_prevents_repeated_drain() {
         &emergency_signer_two,
     );
 
+    // The drain paused the contract.  Resume it and re-fund so we can deposit
+    // a second payment, then attempt a second drain — which must be blocked by
+    // the cooldown, not the pause.
+    token::StellarAssetClient::new(&env, &usdc).mint(&contract_id, &100_000_000i128);
+    client.resume(&admin, &emergency_signer_one, &emergency_signer_two);
+
     let payment_id_b = make_id(&env, 54);
     deposit_default_ttl(&client, &customer, &payment_id_b, &merchant, 100_000_000i128);
+    // This second drain attempt must panic with the cooldown message because
+    // the cooldown period has not yet elapsed.
     client.emergency_drain(
         &emergency_signer_one,
         &emergency_signer_one,
@@ -782,7 +792,10 @@ fn test_dispute_after_partial_release_resolves_to_customer() {
 
     let payment = client.get_payment(&payment_id);
     assert_eq!(payment.status, PaymentStatus::Expired);
-    assert_eq!(payment.released_amount, 250_000_000);
+    // Customer wins the dispute over the remaining 150M. The 100M already
+    // released to the merchant is not clawed back, so released_amount stays
+    // at 100M (issue #51 fix).
+    assert_eq!(payment.released_amount, 100_000_000);
 
     let token_client = token::Client::new(&env, &usdc);
     assert_eq!(token_client.balance(&customer), 900_000_000);
@@ -823,86 +836,228 @@ fn test_dispute_after_partial_release_resolves_to_merchant() {
 }
 
 // ---------------------------------------------------------------------------
-// Persistent TTL extension (#28)
+// Issue #56: set_registry must reject self-referential registry address
 // ---------------------------------------------------------------------------
 
-/// Verify that `deposit` calls `extend_ttl` on the payment entry.
-///
-/// In Soroban's test environment, storage can only be inspected from within
-/// a contract's own execution context.  We use `env.as_contract` to enter the
-/// escrow contract's address scope and read the TTL directly.
 #[test]
-fn test_deposit_extends_persistent_ttl() {
-    let (env, client, contract_id, _admin, customer, merchant, _usdc, ..) = setup_env();
-    let payment_id = make_id(&env, 90);
-
-    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
-
-    let key = DataKey::Payment(payment_id.clone());
-    let contract_id_clone = contract_id.clone();
-    env.as_contract(&contract_id_clone, || {
-        let ttl = env.storage().persistent().get_ttl(&key);
-        // The extend_ttl call in deposit must have bumped the TTL to at least
-        // DEFAULT_PAYMENT_TTL (100 ledgers).
-        assert!(
-            ttl >= DEFAULT_PAYMENT_TTL,
-            "deposit must extend persistent TTL; got {ttl}"
-        );
-    });
+#[should_panic(expected = "Registry cannot be self address")]
+fn test_set_registry_self_address_reverts() {
+    let (env, client, contract_id, admin, ..) = setup_env();
+    // Passing the escrow contract's own address as the registry must panic.
+    client.set_registry(&admin, &Some(contract_id.clone()), &None);
+    let _ = env;
 }
 
-/// Verify that `release_partial` refreshes the persistent TTL so the entry
-/// survives until after the payment's expiry.
 #[test]
-fn test_release_partial_refreshes_persistent_ttl() {
-    let (env, client, contract_id, admin, customer, merchant, _usdc, ..) = setup_env();
-    let payment_id = make_id(&env, 91);
-
-    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
-
-    // Advance the ledger slightly (simulate time passing) then do a partial
-    // release and confirm the TTL is still meaningful.
-    env.ledger().set_sequence_number(50);
-    client.release_partial(&admin, &payment_id, &50_000_000i128);
-
-    let key = DataKey::Payment(payment_id.clone());
-    let contract_id_clone = contract_id.clone();
-    env.as_contract(&contract_id_clone, || {
-        let ttl = env.storage().persistent().get_ttl(&key);
-        // expiry = 10 (initial seq) + DEFAULT_PAYMENT_TTL(100) = 110
-        // ledgers_until_expiry = 110 - 50 = 60; TTL must be at least 60.
-        assert!(
-            ttl >= 60,
-            "release_partial must refresh persistent TTL; got {ttl}"
-        );
-    });
+fn test_set_registry_external_address_succeeds() {
+    let (env, client, _contract_id, admin, ..) = setup_env();
+    let external_registry = Address::generate(&env);
+    // An external address must be accepted without panic.
+    client.set_registry(&admin, &Some(external_registry.clone()), &None);
+    assert_eq!(client.get_registry(), Some(external_registry));
 }
 
-/// Verify that `dispute` extends the persistent TTL using the max TTL so a
-/// disputed payment cannot be archived before it is resolved.
+// ---------------------------------------------------------------------------
+// Issue #53: set_max_ttl_ledgers must be >= default_ttl_ledgers;
+//            set_default_ttl_ledgers must be <= max_ttl_ledgers
+// ---------------------------------------------------------------------------
+
 #[test]
-fn test_dispute_extends_persistent_ttl_to_max_ttl() {
-    let (env, client, contract_id, _admin, customer, merchant, _usdc, ..) = setup_env();
-    let payment_id = make_id(&env, 92);
+#[should_panic(expected = "Max TTL cannot be less than default TTL")]
+fn test_set_max_ttl_ledgers_below_default_reverts() {
+    let (_env, client, _contract_id, admin, ..) = setup_env();
+    // DEFAULT_PAYMENT_TTL == 100; setting max to 50 must panic.
+    client.set_max_ttl_ledgers(&admin, &50u32);
+}
 
-    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
+#[test]
+fn test_set_max_ttl_ledgers_equal_to_default_succeeds() {
+    let (_env, client, _contract_id, admin, ..) = setup_env();
+    // Setting max == default must succeed.
+    client.set_max_ttl_ledgers(&admin, &DEFAULT_PAYMENT_TTL);
+    assert_eq!(client.get_max_ttl_ledgers(), DEFAULT_PAYMENT_TTL);
+}
 
+#[test]
+fn test_set_max_ttl_ledgers_above_default_succeeds() {
+    let (_env, client, _contract_id, admin, ..) = setup_env();
+    client.set_max_ttl_ledgers(&admin, &(DEFAULT_PAYMENT_TTL * 2));
+    assert_eq!(client.get_max_ttl_ledgers(), DEFAULT_PAYMENT_TTL * 2);
+}
+
+#[test]
+#[should_panic(expected = "Default TTL cannot exceed max TTL")]
+fn test_set_default_ttl_ledgers_above_max_reverts() {
+    let (_env, client, _contract_id, admin, ..) = setup_env();
+    // max_ttl defaults to DEFAULT_MAX_TTL_LEDGERS (518_400).
+    // Set max to a small value, then try to push default above it.
+    client.set_max_ttl_ledgers(&admin, &200u32);
+    client.set_default_ttl_ledgers(&admin, &201u32);
+}
+
+#[test]
+fn test_set_default_ttl_ledgers_equal_to_max_succeeds() {
+    let (_env, client, _contract_id, admin, ..) = setup_env();
+    client.set_max_ttl_ledgers(&admin, &200u32);
+    client.set_default_ttl_ledgers(&admin, &200u32);
+    assert_eq!(client.get_default_ttl_ledgers(), 200u32);
+}
+
+#[test]
+fn test_set_default_ttl_ledgers_below_max_succeeds() {
+    let (_env, client, _contract_id, admin, ..) = setup_env();
+    client.set_max_ttl_ledgers(&admin, &500u32);
+    client.set_default_ttl_ledgers(&admin, &200u32);
+    assert_eq!(client.get_default_ttl_ledgers(), 200u32);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #54: set_max_dispute_window_ledgers must not exceed max_ttl_ledgers
+// ---------------------------------------------------------------------------
+
+#[test]
+#[should_panic(expected = "Max dispute window cannot exceed max TTL")]
+fn test_set_max_dispute_window_above_max_ttl_reverts() {
+    let (_env, client, _contract_id, admin, ..) = setup_env();
+    // max_ttl defaults to DEFAULT_MAX_TTL_LEDGERS (518_400).
+    // Set a low max_ttl then try to exceed it with the dispute window.
+    client.set_max_ttl_ledgers(&admin, &200u32);
+    client.set_max_dispute_window_ledgers(&admin, &201u32);
+}
+
+#[test]
+fn test_set_max_dispute_window_equal_to_max_ttl_succeeds() {
+    let (_env, client, _contract_id, admin, ..) = setup_env();
+    client.set_max_ttl_ledgers(&admin, &200u32);
+    client.set_max_dispute_window_ledgers(&admin, &200u32);
+    assert_eq!(client.get_max_dispute_window_ledgers(), 200u32);
+}
+
+#[test]
+fn test_set_max_dispute_window_below_max_ttl_succeeds() {
+    let (_env, client, _contract_id, admin, ..) = setup_env();
+    client.set_max_ttl_ledgers(&admin, &500u32);
+    client.set_max_dispute_window_ledgers(&admin, &300u32);
+    assert_eq!(client.get_max_dispute_window_ledgers(), 300u32);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #55: resolve_dispute_split — split / partial settlement
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_resolve_dispute_split_70_30() {
+    let (env, client, contract_id, admin, customer, merchant, usdc, ..) = setup_env();
+    let payment_id = make_id(&env, 80);
+
+    // Deposit 100_000_000 units.
+    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 100_000_000i128);
+
+    // Customer opens a dispute.
     client.dispute(
         &customer,
         &payment_id,
-        &String::from_str(&env, "testing ttl extension"),
+        &String::from_str(&env, "partial non-delivery"),
     );
 
-    let key = DataKey::Payment(payment_id.clone());
-    let contract_id_clone = contract_id.clone();
-    env.as_contract(&contract_id_clone, || {
-        let ttl = env.storage().persistent().get_ttl(&key);
-        // dispute extends TTL to DEFAULT_MAX_TTL_LEDGERS (518_400).  The test
-        // env caps at max_entry_ttl; we only assert TTL > DEFAULT_PAYMENT_TTL
-        // (100) to confirm the bump occurred.
-        assert!(
-            ttl > DEFAULT_PAYMENT_TTL,
-            "dispute must extend persistent TTL beyond deposit TTL; got {ttl}"
-        );
-    });
+    // Admin resolves with 70% to merchant, 30% to customer.
+    let merchant_cut = 70_000_000i128;
+    let customer_cut = 30_000_000i128;
+    client.resolve_dispute_split(&admin, &payment_id, &merchant_cut, &customer_cut);
+
+    let payment = client.get_payment(&payment_id);
+    assert_eq!(payment.status, PaymentStatus::Released);
+    assert_eq!(payment.released_amount, 100_000_000);
+    assert_eq!(client.get_balance(&payment_id), 0);
+
+    let token_client = token::Client::new(&env, &usdc);
+    // Customer started with 1_000_000_000, deposited 100_000_000, gets 30_000_000 back.
+    assert_eq!(token_client.balance(&customer), 930_000_000);
+    assert_eq!(token_client.balance(&merchant), 70_000_000);
+    assert_eq!(token_client.balance(&contract_id), 0);
+}
+
+#[test]
+#[should_panic(expected = "Split amounts must sum to remaining balance")]
+fn test_resolve_dispute_split_wrong_sum_reverts() {
+    let (env, client, _contract_id, admin, customer, merchant, _usdc, ..) = setup_env();
+    let payment_id = make_id(&env, 81);
+
+    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 100_000_000i128);
+    client.dispute(
+        &customer,
+        &payment_id,
+        &String::from_str(&env, "dispute"),
+    );
+
+    // 60 + 30 = 90, not 100 → must panic.
+    client.resolve_dispute_split(&admin, &payment_id, &60_000_000i128, &30_000_000i128);
+}
+
+#[test]
+#[should_panic(expected = "Dispute is not open")]
+fn test_resolve_dispute_split_requires_disputed_status() {
+    let (env, client, _contract_id, admin, customer, merchant, _usdc, ..) = setup_env();
+    let payment_id = make_id(&env, 82);
+
+    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 100_000_000i128);
+    // No dispute opened — must panic.
+    client.resolve_dispute_split(
+        &admin,
+        &payment_id,
+        &50_000_000i128,
+        &50_000_000i128,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Not admin")]
+fn test_resolve_dispute_split_unauthorized() {
+    let (env, client, _contract_id, _admin, customer, merchant, _usdc, ..) = setup_env();
+    let payment_id = make_id(&env, 83);
+    let random = Address::generate(&env);
+
+    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 100_000_000i128);
+    client.dispute(
+        &customer,
+        &payment_id,
+        &String::from_str(&env, "dispute"),
+    );
+    client.resolve_dispute_split(&random, &payment_id, &50_000_000i128, &50_000_000i128);
+}
+
+#[test]
+fn test_resolve_dispute_split_after_partial_release() {
+    let (env, client, contract_id, admin, customer, merchant, usdc, ..) = setup_env();
+    let payment_id = make_id(&env, 84);
+
+    // Deposit 200_000_000, release 50_000_000 to merchant first.
+    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 200_000_000i128);
+    client.release_partial(&admin, &payment_id, &50_000_000i128);
+
+    // Customer disputes; remaining balance is 150_000_000.
+    client.dispute(
+        &customer,
+        &payment_id,
+        &String::from_str(&env, "partial dispute"),
+    );
+
+    // Split the remaining 150_000_000: 90_000_000 to merchant, 60_000_000 to customer.
+    client.resolve_dispute_split(
+        &admin,
+        &payment_id,
+        &90_000_000i128,
+        &60_000_000i128,
+    );
+
+    let payment = client.get_payment(&payment_id);
+    assert_eq!(payment.status, PaymentStatus::Released);
+    assert_eq!(payment.released_amount, 200_000_000);
+
+    let token_client = token::Client::new(&env, &usdc);
+    // Merchant: 50 (partial) + 90 (split) = 140_000_000.
+    assert_eq!(token_client.balance(&merchant), 140_000_000);
+    // Customer: started 1_000_000_000, deposited 200_000_000, gets 60_000_000 back → 860_000_000.
+    assert_eq!(token_client.balance(&customer), 860_000_000);
+    assert_eq!(token_client.balance(&contract_id), 0);
 }

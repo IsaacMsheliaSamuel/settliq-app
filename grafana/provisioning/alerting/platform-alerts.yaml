@@ -17,7 +17,7 @@ groups:
             relativeTimeRange:
               from: 300
               to: 0
-            datasourceUid: prometheus
+            datasourceUid: Prometheus
             model:
               expr: |
                 rate(settlement_failed_total[5m])
@@ -64,7 +64,7 @@ groups:
             relativeTimeRange:
               from: 300
               to: 0
-            datasourceUid: prometheus
+            datasourceUid: Prometheus
             model:
               expr: |
                 rate(http_requests_total{status=~"5.."}[5m])
@@ -110,7 +110,7 @@ groups:
             relativeTimeRange:
               from: 60
               to: 0
-            datasourceUid: prometheus
+            datasourceUid: Prometheus
             model:
               expr: bull_queue_waiting{queue=~".+"} + bull_queue_active{queue=~".+"}
               intervalMs: 1000
@@ -154,7 +154,7 @@ groups:
             relativeTimeRange:
               from: 3600
               to: 0
-            datasourceUid: prometheus
+            datasourceUid: Prometheus
             model:
               expr: |
                 (hour() >= 8 and hour() < 22)

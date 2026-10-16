@@ -370,7 +370,7 @@ fn test_accept_admin_without_proposal_fails() {
 }
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "accept_admin wrong caller")]
 fn test_accept_admin_wrong_caller_fails() {
     let (env, client, admin) = setup();
     let new_admin = Address::generate(&env);
@@ -380,4 +380,140 @@ fn test_accept_admin_wrong_caller_fails() {
     // Disable mock auths so require_auth fails when not signed by pending admin
     env.set_auths(&[]);
     client.accept_admin();
+}
+
+// ---------------------------------------------------------------------------
+// update_merchant – terminated guard (#59)
+// ---------------------------------------------------------------------------
+
+#[test]
+#[should_panic(expected = "Cannot modify terminated merchant")]
+fn test_update_merchant_on_terminated_reverts() {
+    let (env, client, admin) = setup();
+    let merchant = Address::generate(&env);
+
+    client.register_merchant(&admin, &merchant, &sample_name(&env));
+    client.terminate_merchant(&admin, &merchant);
+
+    // Must revert: terminated merchants are immutable.
+    client.update_merchant(&admin, &merchant, &String::from_str(&env, "New Name"));
+}
+
+#[test]
+fn test_update_merchant_on_active_succeeds() {
+    let (env, client, admin) = setup();
+    let merchant = Address::generate(&env);
+
+    client.register_merchant(&admin, &merchant, &sample_name(&env));
+    client.update_merchant(&admin, &merchant, &String::from_str(&env, "New Name"));
+
+    let record = client.get_merchant(&merchant).unwrap();
+    assert_eq!(record.name, String::from_str(&env, "New Name"));
+}
+
+#[test]
+fn test_update_merchant_on_suspended_succeeds() {
+    let (env, client, admin) = setup();
+    let merchant = Address::generate(&env);
+
+    client.register_merchant(&admin, &merchant, &sample_name(&env));
+    client.suspend_merchant(&admin, &merchant);
+    client.update_merchant(&admin, &merchant, &String::from_str(&env, "Suspended Corp"));
+
+    let record = client.get_merchant(&merchant).unwrap();
+    assert_eq!(record.name, String::from_str(&env, "Suspended Corp"));
+}
+
+// ---------------------------------------------------------------------------
+// update_fee_tier – terminated guard (#59)
+// ---------------------------------------------------------------------------
+
+#[test]
+#[should_panic(expected = "Cannot modify terminated merchant")]
+fn test_update_fee_tier_on_terminated_reverts() {
+    let (env, client, admin) = setup();
+    let merchant = Address::generate(&env);
+
+    client.register_merchant(&admin, &merchant, &sample_name(&env));
+    client.terminate_merchant(&admin, &merchant);
+
+    // Must revert: fee tier of a terminated merchant cannot be changed.
+    client.update_fee_tier(&admin, &merchant, &200);
+}
+
+#[test]
+fn test_update_fee_tier_on_active_succeeds() {
+    let (env, client, admin) = setup();
+    let merchant = Address::generate(&env);
+
+    client.register_merchant(&admin, &merchant, &sample_name(&env));
+    client.update_fee_tier(&admin, &merchant, &200);
+
+    let record = client.get_merchant(&merchant).unwrap();
+    assert_eq!(record.fee_bps, 200);
+}
+
+#[test]
+fn test_update_fee_tier_on_suspended_succeeds() {
+    let (env, client, admin) = setup();
+    let merchant = Address::generate(&env);
+
+    client.register_merchant(&admin, &merchant, &sample_name(&env));
+    client.suspend_merchant(&admin, &merchant);
+    client.update_fee_tier(&admin, &merchant, &300);
+
+    let record = client.get_merchant(&merchant).unwrap();
+    assert_eq!(record.fee_bps, 300);
+}
+
+// ---------------------------------------------------------------------------
+// cancel_admin_proposal (#60)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_cancel_admin_proposal_removes_pending() {
+    let (env, client, admin) = setup();
+    let new_admin = Address::generate(&env);
+
+    client.propose_admin(&admin, &new_admin);
+    assert_eq!(client.get_pending_admin(), Some(new_admin.clone()));
+
+    client.cancel_admin_proposal(&admin);
+
+    assert_eq!(client.get_pending_admin(), None);
+}
+
+#[test]
+#[should_panic(expected = "No pending admin transfer")]
+fn test_accept_admin_after_cancellation_reverts() {
+    let (env, client, admin) = setup();
+    let new_admin = Address::generate(&env);
+
+    client.propose_admin(&admin, &new_admin);
+    client.cancel_admin_proposal(&admin);
+
+    // The previously proposed address can no longer accept.
+    client.accept_admin();
+}
+
+#[test]
+#[should_panic(expected = "No pending admin proposal")]
+fn test_cancel_admin_proposal_without_active_proposal_reverts() {
+    let (_env, client, admin) = setup();
+
+    // No proposal has been made; cancel must revert.
+    client.cancel_admin_proposal(&admin);
+}
+
+#[test]
+#[should_panic(expected = "Caller is not admin")]
+fn test_cancel_admin_proposal_unauthorized_reverts() {
+    let (env, client, admin) = setup();
+    let new_admin = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    client.propose_admin(&admin, &new_admin);
+
+    // Non-admin must not be able to cancel a proposal.
+    client.cancel_admin_proposal(&attacker);
 }
