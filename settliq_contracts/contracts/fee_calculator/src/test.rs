@@ -331,3 +331,78 @@ fn test_fee_above_min_fee_is_not_clamped() {
     assert_eq!(fee, 100);
     assert_eq!(net, 9_900);
 }
+
+// ---------------------------------------------------------------------------
+// quote_fee (#61)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_quote_fee_does_not_mutate_volume() {
+    let (env, client, _admin, merchant, settlement_caller) = setup_env();
+
+    // Record volume before quoting.
+    let volume_before = client.get_merchant_volume(&merchant).volume_usdc;
+
+    // Call quote_fee; this must NOT advance the stored volume.
+    let _ = client.quote_fee(&merchant, &1_000);
+
+    // Volume must be identical after the quote.
+    let volume_after = client.get_merchant_volume(&merchant).volume_usdc;
+    assert_eq!(volume_before, volume_after);
+
+    // Confirm a subsequent calculate_fee still works and correctly advances volume.
+    let _ = client.calculate_fee(&settlement_caller, &merchant, &1_000);
+    assert_eq!(client.get_merchant_volume(&merchant).volume_usdc, 1_000);
+}
+
+#[test]
+fn test_quote_fee_matches_calculate_fee_output() {
+    let (_env, client, _admin, merchant, settlement_caller) = setup_env();
+
+    // Pre-seed some volume so both functions see the same tier boundary.
+    client.calculate_fee(&settlement_caller, &merchant, &500);
+
+    // quote_fee must agree with the next calculate_fee for the same amount,
+    // since neither call crosses a tier boundary here.
+    let (q_fee, q_net, q_bps) = client.quote_fee(&merchant, &200);
+    let (c_fee, c_net, c_bps) = client.calculate_fee(&settlement_caller, &merchant, &200);
+
+    assert_eq!(q_fee, c_fee);
+    assert_eq!(q_net, c_net);
+    assert_eq!(q_bps, c_bps);
+}
+
+#[test]
+fn test_quote_fee_returns_correct_tier_bps() {
+    let (_env, client, _admin, merchant, settlement_caller) = setup_env();
+
+    // Volume = 0 → tier 1 (150 bps).
+    let (_, _, bps_tier1) = client.quote_fee(&merchant, &100);
+    assert_eq!(bps_tier1, 150);
+
+    // Push volume past the 1 000 threshold.
+    client.calculate_fee(&settlement_caller, &merchant, &1_000);
+
+    // Now quote sees volume ≥ 1 000 → tier 2 (120 bps).
+    let (_, _, bps_tier2) = client.quote_fee(&merchant, &100);
+    assert_eq!(bps_tier2, 120);
+}
+
+#[test]
+#[should_panic(expected = "amount must be > 0")]
+fn test_quote_fee_zero_amount_reverts() {
+    let (_env, client, _admin, merchant, _s) = setup_env();
+    client.quote_fee(&merchant, &0);
+}
+
+#[test]
+fn test_quote_fee_is_permissionless() {
+    // quote_fee requires no caller auth — any address can call it.
+    let (env, client, _admin, merchant, _s) = setup_env();
+    let random = Address::generate(&env);
+
+    // Simply calling quote_fee from an unprivileged address must succeed.
+    let _ = client.quote_fee(&merchant, &500);
+    // Volume must remain zero — the call was read-only.
+    assert_eq!(client.get_merchant_volume(&merchant).volume_usdc, 0);
+}

@@ -164,6 +164,47 @@ impl FeeCalculatorContract {
         (fee, net, fee_bps)
     }
 
+    /// Read-only quote: returns the fee breakdown for `amount` using the
+    /// merchant's current 30-day windowed volume, without mutating any
+    /// storage (issue #61).
+    ///
+    /// Safe for permissionless use by payment frontends and checkout APIs
+    /// that need to display an estimated fee before committing to a settlement.
+    /// The returned `(fee, net, fee_bps)` values are identical to what
+    /// `calculate_fee` would produce for the same inputs, but no volume
+    /// accumulation occurs.
+    pub fn quote_fee(env: Env, merchant: Address, amount: i128) -> (i128, i128, u32) {
+        if amount <= 0 {
+            panic!("amount must be > 0");
+        }
+
+        // Read current windowed volume without mutating storage.
+        let volume = Self::get_merchant_volume(env.clone(), merchant).volume_usdc;
+        let fee_bps = Self::select_fee_bps(&env, volume);
+
+        let mut fee = amount
+            .checked_mul(fee_bps as i128)
+            .expect("overflow")
+            .checked_div(BPS_DENOMINATOR)
+            .expect("division failure");
+
+        let min_fee_stroops: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinFeeStroops)
+            .unwrap_or(0);
+        if fee < min_fee_stroops {
+            fee = min_fee_stroops;
+        }
+        if fee > amount {
+            fee = amount;
+        }
+
+        let net = amount.checked_sub(fee).expect("underflow");
+
+        (fee, net, fee_bps)
+    }
+
     /// Read-only query: returns the merchant's current 30-day windowed volume.
     /// If the window has elapsed, the windowed (reset) value is computed in
     /// memory and returned without writing back to storage. The actual

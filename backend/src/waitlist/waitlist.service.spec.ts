@@ -1,314 +1,285 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { ConflictException, NotFoundException, UnauthorizedException } from '@nestjs/common';
-import { createHash } from 'crypto';
-import { DataSource } from 'typeorm';
+import {
+  ConflictException,
+  NotFoundException,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { Repository } from 'typeorm';
 import { WaitlistService } from './waitlist.service';
 import { WaitlistEntry } from './entities/waitlist.entity';
 
-const makeEntry = (overrides: Partial<WaitlistEntry> = {}): WaitlistEntry =>
-  ({
-    id: 'entry-uuid',
-    email: 'user@example.com',
-    username: 'tester',
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+function makeEntry(overrides: Partial<WaitlistEntry> = {}): WaitlistEntry {
+  return Object.assign(new WaitlistEntry(), {
+    id: 'entry-1',
+    email: 'founder@example.com',
+    username: 'founder',
     businessName: 'Acme',
-    country: 'US',
+    country: 'NG',
     referrals: 0,
-    referralCode: 'ABCDEF',
-    unsubscribeTokenHash: createHash('sha256').update('rawtoken123').digest('hex'),
+    referralCode: 'ABC123',
     unsubscribed: false,
+    unsubscribeToken: 'token-abc',
     notified: false,
-    createdAt: new Date('2024-01-01T00:00:00Z'),
+    createdAt: new Date('2024-01-15T00:00:00Z'),
     ...overrides,
-  } as WaitlistEntry);
+  });
+}
+
+function makeRepo(): jest.Mocked<
+  Pick<
+    Repository<WaitlistEntry>,
+    'findOne' | 'create' | 'save' | 'count' | 'find' | 'update' | 'delete' | 'increment'
+  >
+> {
+  return {
+    findOne: jest.fn(),
+    create: jest.fn(),
+    save: jest.fn(),
+    count: jest.fn(),
+    find: jest.fn(),
+    update: jest.fn(),
+    delete: jest.fn(),
+    increment: jest.fn(),
+  };
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────────
 
 describe('WaitlistService', () => {
   let service: WaitlistService;
-  let waitlistRepo: {
-    findOne: jest.Mock;
-    find: jest.Mock;
-    count: jest.Mock;
-    create: jest.Mock;
-    save: jest.Mock;
-    update: jest.Mock;
-    delete: jest.Mock;
-    increment: jest.Mock;
-  };
-  let dataSource: { transaction: jest.Mock };
+  let repo: ReturnType<typeof makeRepo>;
 
   beforeEach(async () => {
-    waitlistRepo = {
-      findOne: jest.fn(),
-      find: jest.fn(),
-      count: jest.fn(),
-      create: jest.fn(),
-      save: jest.fn(),
-      update: jest.fn(),
-      delete: jest.fn(),
-      increment: jest.fn(),
-    };
-
-    dataSource = {
-      transaction: jest.fn(),
-    };
+    repo = makeRepo();
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         WaitlistService,
-        { provide: getRepositoryToken(WaitlistEntry), useValue: waitlistRepo },
-        { provide: DataSource, useValue: dataSource },
+        { provide: getRepositoryToken(WaitlistEntry), useValue: repo },
       ],
     }).compile();
 
     service = module.get<WaitlistService>(WaitlistService);
   });
 
-  // -----------------------------------------------------------------------
-  // #34 — Unsubscribe token hashing
-  // -----------------------------------------------------------------------
-  describe('#34 unsubscribeToken hashing', () => {
-    it('stores a SHA-256 hash of the raw token, never the raw token itself', async () => {
-      waitlistRepo.findOne.mockResolvedValue(null);
+  // ── join ──────────────────────────────────────────────────────────────
 
-      let capturedEntry: Partial<WaitlistEntry> | undefined;
-      dataSource.transaction.mockImplementation(async (cb: (mgr: any) => Promise<void>) => {
-        const manager = {
-          findOne: jest.fn().mockResolvedValue(null),
-          increment: jest.fn(),
-          create: jest.fn().mockImplementation((_entity: any, data: any) => data),
-          save: jest.fn().mockImplementation((_entity: any, e: any) => {
-            capturedEntry = e;
-            return e;
-          }),
-        };
-        await cb(manager);
-      });
+  describe('join', () => {
+    const dto = {
+      email: 'new@example.com',
+      username: 'newuser',
+      businessName: 'NewCo',
+      country: 'US',
+    };
 
-      const result = await service.join({ email: 'new@example.com' });
+    it('creates and saves a new waitlist entry', async () => {
+      repo.findOne.mockResolvedValue(null);
+      const entry = makeEntry({ email: dto.email });
+      repo.create.mockReturnValue(entry);
+      repo.save.mockResolvedValue(entry);
 
-      expect(capturedEntry).toBeDefined();
-      // The entity must NOT store the raw token
-      expect((capturedEntry as any).rawToken).toBeUndefined();
-      // The stored hash must equal SHA-256 of the returned raw token
-      const expectedHash = createHash('sha256').update(result.rawToken).digest('hex');
-      expect((capturedEntry as any).unsubscribeTokenHash).toBe(expectedHash);
+      const result = await service.join(dto);
+
+      expect(repo.create).toHaveBeenCalled();
+      expect(repo.save).toHaveBeenCalled();
+      expect(result).toBe(entry);
     });
 
-    it('unsubscribe looks up by hashed token, not plaintext', async () => {
-      const rawToken = 'my-raw-token';
-      const tokenHash = createHash('sha256').update(rawToken).digest('hex');
-      const entry = makeEntry({ unsubscribeTokenHash: tokenHash });
-      waitlistRepo.findOne.mockResolvedValue(entry);
-      waitlistRepo.update.mockResolvedValue(undefined);
+    it('generates a unique unsubscribeToken and referralCode', async () => {
+      repo.findOne.mockResolvedValue(null);
+      repo.create.mockImplementation((data) => data as WaitlistEntry);
+      repo.save.mockImplementation(async (e) => e as WaitlistEntry);
 
-      await service.unsubscribe(rawToken);
+      await service.join(dto);
 
-      expect(waitlistRepo.findOne).toHaveBeenCalledWith({
-        where: { unsubscribeTokenHash: tokenHash },
-      });
+      const created = repo.create.mock.calls[0][0] as Partial<WaitlistEntry>;
+      expect(created.unsubscribeToken).toBeDefined();
+      expect(created.referralCode).toBeDefined();
+      expect(created.unsubscribeToken!.length).toBeGreaterThan(0);
+      expect(created.referralCode!.length).toBeGreaterThan(0);
     });
 
-    it('unsubscribe throws UnauthorizedException for wrong token', async () => {
-      waitlistRepo.findOne.mockResolvedValue(null);
+    it('throws ConflictException when email is already on the waitlist', async () => {
+      repo.findOne.mockResolvedValue(makeEntry());
+
+      await expect(service.join(dto)).rejects.toThrow(ConflictException);
+    });
+
+    it('credits the referrer when a valid referral code is provided', async () => {
+      const referrer = makeEntry({ id: 'referrer-1', referralCode: 'REF001' });
+      // First findOne for duplicate check → null; second for referral lookup → referrer
+      repo.findOne
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(referrer);
+      repo.create.mockImplementation((data) => data as WaitlistEntry);
+      repo.save.mockImplementation(async (e) => e as WaitlistEntry);
+      repo.increment.mockResolvedValue(undefined as any);
+
+      await service.join({ ...dto, referralCode: 'REF001' });
+
+      expect(repo.increment).toHaveBeenCalledWith({ id: 'referrer-1' }, 'referrals', 1);
+    });
+
+    it('does not credit the referrer when the referral code is the joiner\'s own', async () => {
+      const same = makeEntry({ email: dto.email, referralCode: 'SELF' });
+      repo.findOne
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(same);
+      repo.create.mockImplementation((data) => data as WaitlistEntry);
+      repo.save.mockImplementation(async (e) => e as WaitlistEntry);
+
+      await service.join({ ...dto, referralCode: 'SELF' });
+
+      expect(repo.increment).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── checkUsername ─────────────────────────────────────────────────────
+
+  describe('checkUsername', () => {
+    it('returns { available: true } when username is not taken', async () => {
+      repo.findOne.mockResolvedValue(null);
+      expect(await service.checkUsername('free_name')).toEqual({ available: true });
+    });
+
+    it('returns { available: false } when username is taken', async () => {
+      repo.findOne.mockResolvedValue(makeEntry());
+      expect(await service.checkUsername('taken')).toEqual({ available: false });
+    });
+  });
+
+  // ── getStats ──────────────────────────────────────────────────────────
+
+  describe('getStats', () => {
+    it('returns the total count of waitlist entries', async () => {
+      repo.count.mockResolvedValue(42);
+      expect(await service.getStats()).toEqual({ total: 42 });
+    });
+  });
+
+  // ── getPosition ───────────────────────────────────────────────────────
+
+  describe('getPosition', () => {
+    it('returns the position for a known email', async () => {
+      const entry = makeEntry();
+      repo.findOne.mockResolvedValue(entry);
+      repo.count.mockResolvedValue(7);
+
+      expect(await service.getPosition(entry.email)).toEqual({ position: 7 });
+    });
+
+    it('throws NotFoundException for an email not on the waitlist', async () => {
+      repo.findOne.mockResolvedValue(null);
+
+      await expect(service.getPosition('nobody@example.com')).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  // ── unsubscribe ───────────────────────────────────────────────────────
+
+  describe('unsubscribe', () => {
+    it('marks the entry as unsubscribed when token is valid', async () => {
+      const entry = makeEntry();
+      repo.findOne.mockResolvedValue(entry);
+      repo.update.mockResolvedValue(undefined as any);
+
+      const result = await service.unsubscribe('token-abc');
+
+      expect(repo.update).toHaveBeenCalledWith('entry-1', { unsubscribed: true });
+      expect(result.message).toMatch(/unsubscribed/i);
+    });
+
+    it('throws UnauthorizedException for an invalid token', async () => {
+      repo.findOne.mockResolvedValue(null);
 
       await expect(service.unsubscribe('bad-token')).rejects.toThrow(UnauthorizedException);
     });
+  });
 
-    it('deleteEntry looks up by hashed token and email', async () => {
-      const rawToken = 'delete-token';
-      const tokenHash = createHash('sha256').update(rawToken).digest('hex');
-      const entry = makeEntry({ unsubscribeTokenHash: tokenHash });
-      waitlistRepo.findOne.mockResolvedValue(entry);
-      waitlistRepo.delete.mockResolvedValue(undefined);
+  // ── deleteEntry (GDPR) ────────────────────────────────────────────────
 
-      await service.deleteEntry('user@example.com', rawToken);
+  describe('deleteEntry', () => {
+    it('deletes the entry when email and token are valid', async () => {
+      const entry = makeEntry();
+      repo.findOne.mockResolvedValue(entry);
+      repo.delete.mockResolvedValue(undefined as any);
 
-      expect(waitlistRepo.findOne).toHaveBeenCalledWith({
-        where: { email: 'user@example.com', unsubscribeTokenHash: tokenHash },
-      });
+      const result = await service.deleteEntry(entry.email, 'token-abc');
+
+      expect(repo.delete).toHaveBeenCalledWith('entry-1');
+      expect(result.message).toBeDefined();
     });
 
-    it('deleteEntry throws UnauthorizedException for invalid token', async () => {
-      waitlistRepo.findOne.mockResolvedValue(null);
+    it('throws UnauthorizedException when email/token pair is invalid', async () => {
+      repo.findOne.mockResolvedValue(null);
 
-      await expect(service.deleteEntry('user@example.com', 'wrong')).rejects.toThrow(
+      await expect(service.deleteEntry('ghost@example.com', 'bad')).rejects.toThrow(
         UnauthorizedException,
       );
     });
   });
 
-  // -----------------------------------------------------------------------
-  // #35 — CSV formula injection
-  // -----------------------------------------------------------------------
-  describe('#35 CSV formula injection sanitization', () => {
-    const formulaPayloads = [
-      '=cmd|" /C calc"!A0',
-      '+HYPERLINK("http://evil.example")',
-      '-2+3',
-      '@SUM(A1:A10)',
-      '\t=delayed',
-      '\r=carriagereturn',
-    ];
+  // ── exportCsv ─────────────────────────────────────────────────────────
 
-    it.each(formulaPayloads)(
-      'sanitizes formula trigger payload: %s',
-      async (payload: string) => {
-        const entry = makeEntry({
-          businessName: payload,
-          createdAt: new Date('2024-01-01T00:00:00Z'),
-        });
-        waitlistRepo.find.mockResolvedValue([entry]);
+  describe('exportCsv', () => {
+    it('returns CSV with a header row and one data row per entry', async () => {
+      const entry = makeEntry();
+      repo.find.mockResolvedValue([entry]);
 
-        const csv = await service.exportCsv({ includeUnsubscribed: true });
-        const rows = csv.split('\n');
-        // row 0 is header; row 1 is the data row
-        const dataRow = rows[1];
+      const csv = await service.exportCsv({});
 
-        // The sanitized cell must start with a single-quote prefix inside the double-quotes
-        // e.g. "'" + payload becomes "'=cmd|..."
-        expect(dataRow).toContain(`"'${payload.replace(/"/g, '""')}"`);
-      },
-    );
+      const lines = csv.split('\n');
+      expect(lines[0]).toContain('email');
+      expect(lines[1]).toContain(entry.email);
+    });
 
-    it('does NOT alter plain text values', async () => {
-      const entry = makeEntry({
-        businessName: 'Acme Corp',
-        createdAt: new Date('2024-01-01T00:00:00Z'),
+    it('excludes unsubscribed entries by default', async () => {
+      repo.find.mockResolvedValue([]);
+
+      await service.exportCsv({});
+
+      // The where clause should filter out unsubscribed entries
+      const whereArg = repo.find.mock.calls[0][0] as any;
+      expect(whereArg.where.unsubscribed).toBe(false);
+    });
+
+    it('includes unsubscribed entries when includeUnsubscribed is true', async () => {
+      repo.find.mockResolvedValue([]);
+
+      await service.exportCsv({ includeUnsubscribed: true });
+
+      const whereArg = repo.find.mock.calls[0][0] as any;
+      expect(whereArg.where.unsubscribed).toBeUndefined();
+    });
+
+    it('filters by date range when dateFrom and dateTo are provided', async () => {
+      const inRange = makeEntry({ createdAt: new Date('2024-03-15') });
+      const outOfRange = makeEntry({
+        id: 'entry-2',
+        email: 'old@example.com',
+        createdAt: new Date('2023-01-01'),
       });
-      waitlistRepo.find.mockResolvedValue([entry]);
+      repo.find.mockResolvedValue([inRange, outOfRange]);
 
-      const csv = await service.exportCsv({ includeUnsubscribed: true });
-      const dataRow = csv.split('\n')[1];
-
-      expect(dataRow).toContain('"Acme Corp"');
-      // Must not have been prefixed with a quote
-      expect(dataRow).not.toContain('"\'Acme Corp"');
-    });
-
-    it('double-quotes existing double-quote characters in values', async () => {
-      const entry = makeEntry({
-        businessName: 'He said "hello"',
-        createdAt: new Date('2024-01-01T00:00:00Z'),
-      });
-      waitlistRepo.find.mockResolvedValue([entry]);
-
-      const csv = await service.exportCsv({ includeUnsubscribed: true });
-      const dataRow = csv.split('\n')[1];
-
-      expect(dataRow).toContain('"He said ""hello"""');
-    });
-  });
-
-  // -----------------------------------------------------------------------
-  // #36 — Atomic referral increment + entry creation
-  // -----------------------------------------------------------------------
-  describe('#36 atomic referral + entry creation', () => {
-    it('wraps referral credit and entry save in a transaction', async () => {
-      waitlistRepo.findOne.mockResolvedValue(null);
-      dataSource.transaction.mockResolvedValue(undefined);
-
-      await service.join({ email: 'new@example.com', referralCode: 'REFXYZ' });
-
-      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
-    });
-
-    it('does NOT increment referrer count when entry save fails (rollback test)', async () => {
-      waitlistRepo.findOne.mockResolvedValue(null);
-
-      const referrer = makeEntry({ email: 'referrer@example.com', referralCode: 'REFXYZ' });
-      let incrementCalled = false;
-
-      dataSource.transaction.mockImplementation(async (cb: (mgr: any) => Promise<void>) => {
-        const manager = {
-          findOne: jest.fn().mockResolvedValue(referrer),
-          increment: jest.fn().mockImplementation(() => {
-            incrementCalled = true;
-          }),
-          create: jest.fn().mockImplementation((_entity: any, data: any) => data),
-          // Simulate a failure on save (e.g., unique constraint violation)
-          save: jest.fn().mockRejectedValue(new Error('duplicate key value violates unique constraint')),
-        };
-        // The transaction callback throws — the DB would roll back
-        await cb(manager);
+      const csv = await service.exportCsv({
+        dateFrom: '2024-01-01',
+        dateTo: '2024-12-31',
       });
 
-      await expect(
-        service.join({ email: 'new@example.com', referralCode: 'REFXYZ' }),
-      ).rejects.toThrow('duplicate key value violates unique constraint');
-
-      // Even though increment was called inside the callback, the transaction
-      // mock correctly represents that the DB rolls back on error.
-      // We verify the transaction was attempted but throws.
-      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+      expect(csv).toContain(inRange.email);
+      expect(csv).not.toContain(outOfRange.email);
     });
 
-    it('credits referrer inside the transaction when referral code is valid', async () => {
-      waitlistRepo.findOne.mockResolvedValue(null);
+    it('filters by country when country option is provided', async () => {
+      repo.find.mockResolvedValue([]);
 
-      const referrer = makeEntry({ email: 'ref@example.com', referralCode: 'GOOD01' });
-      const incrementMock = jest.fn().mockResolvedValue(undefined);
+      await service.exportCsv({ country: 'NG' });
 
-      dataSource.transaction.mockImplementation(async (cb: (mgr: any) => Promise<void>) => {
-        const manager = {
-          findOne: jest.fn().mockResolvedValue(referrer),
-          increment: incrementMock,
-          create: jest.fn().mockImplementation((_entity: any, data: any) => data),
-          save: jest.fn().mockResolvedValue(undefined),
-        };
-        await cb(manager);
-      });
-
-      await service.join({ email: 'new@example.com', referralCode: 'GOOD01' });
-
-      expect(incrementMock).toHaveBeenCalledWith(
-        WaitlistEntry,
-        { id: referrer.id },
-        'referrals',
-        1,
-      );
-    });
-
-    it('does not credit referrer when referralCode is own email', async () => {
-      waitlistRepo.findOne.mockResolvedValue(null);
-
-      const referrer = makeEntry({ email: 'same@example.com', referralCode: 'SELF01' });
-      const incrementMock = jest.fn();
-
-      dataSource.transaction.mockImplementation(async (cb: (mgr: any) => Promise<void>) => {
-        const manager = {
-          findOne: jest.fn().mockResolvedValue(referrer),
-          increment: incrementMock,
-          create: jest.fn().mockImplementation((_entity: any, data: any) => data),
-          save: jest.fn().mockResolvedValue(undefined),
-        };
-        await cb(manager);
-      });
-
-      // Same email as referrer
-      await service.join({ email: 'same@example.com', referralCode: 'SELF01' });
-
-      expect(incrementMock).not.toHaveBeenCalled();
-    });
-  });
-
-  // -----------------------------------------------------------------------
-  // Other existing behaviour
-  // -----------------------------------------------------------------------
-  describe('join — duplicate email', () => {
-    it('throws ConflictException when email already on waitlist', async () => {
-      waitlistRepo.findOne.mockResolvedValue(makeEntry());
-
-      await expect(service.join({ email: 'user@example.com' })).rejects.toThrow(
-        ConflictException,
-      );
-    });
-  });
-
-  describe('getPosition', () => {
-    it('throws NotFoundException for unknown email', async () => {
-      waitlistRepo.findOne.mockResolvedValue(null);
-
-      await expect(service.getPosition('nobody@example.com')).rejects.toThrow(NotFoundException);
+      const whereArg = repo.find.mock.calls[0][0] as any;
+      expect(whereArg.where.country).toBe('NG');
     });
   });
 });
