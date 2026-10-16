@@ -374,7 +374,7 @@ fn test_refund_returns_remaining_balance_after_partial_release() {
     deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
     client.release_partial(&admin, &payment_id, &100_000_000i128);
     env.ledger().set_sequence_number(111);
-    client.refund(&payment_id);
+    client.refund(&admin, &payment_id);
 
     let payment = client.get_payment(&payment_id);
     assert_eq!(payment.status, PaymentStatus::Expired);
@@ -692,6 +692,7 @@ fn test_emergency_drain_moves_all_funds_to_treasury() {
         &emergency_signer_one,
         &emergency_signer_one,
         &emergency_signer_two,
+        &AssetType::Usdc,
     );
     assert_eq!(drained, 250_000_000);
 
@@ -722,7 +723,12 @@ fn test_emergency_drain_rejects_non_multisig_signer() {
     deposit_default_ttl(&client, &customer, &payment_id, &merchant, 250_000_000i128);
     let random = Address::generate(&env);
 
-    client.emergency_drain(&emergency_signer_one, &emergency_signer_one, &random);
+    client.emergency_drain(
+        &emergency_signer_one,
+        &emergency_signer_one,
+        &random,
+        &AssetType::Usdc,
+    );
 }
 
 #[test]
@@ -749,6 +755,7 @@ fn test_emergency_drain_cooldown_prevents_repeated_drain() {
         &emergency_signer_one,
         &emergency_signer_one,
         &emergency_signer_two,
+        &AssetType::Usdc,
     );
 
     // The drain paused the contract.  Resume it and re-fund so we can deposit
@@ -765,6 +772,7 @@ fn test_emergency_drain_cooldown_prevents_repeated_drain() {
         &emergency_signer_one,
         &emergency_signer_one,
         &emergency_signer_two,
+        &AssetType::Usdc,
     );
 }
 

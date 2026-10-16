@@ -86,6 +86,7 @@ struct EscrowStateEvent {
 struct EmergencyDrainEvent {
     amount: i128,
     caller: Address,
+    asset_type: AssetType,
 }
 
 #[contracttype]
@@ -604,7 +605,9 @@ impl PaymentEscrowContract {
         );
     }
 
-    pub fn refund(env: Env, payment_id: BytesN<32>) {
+    pub fn refund(env: Env, caller: Address, payment_id: BytesN<32>) {
+        caller.require_auth();
+
         let mut payment = Self::get_payment(env.clone(), payment_id.clone());
         Self::require_not_paused(&env);
         Self::require_expirable(&env, &payment);
@@ -854,7 +857,13 @@ impl PaymentEscrowContract {
             .unwrap_or(DEFAULT_MAX_TTL_LEDGERS)
     }
 
-    pub fn emergency_drain(env: Env, caller: Address, signer_one: Address, signer_two: Address) -> i128 {
+    pub fn emergency_drain(
+        env: Env,
+        caller: Address,
+        signer_one: Address,
+        signer_two: Address,
+        asset_type: AssetType,
+    ) -> i128 {
         caller.require_auth();
         if signer_one == signer_two {
             panic!("Emergency signers must be distinct");
@@ -885,13 +894,13 @@ impl PaymentEscrowContract {
             panic!("Emergency drain cooldown active");
         }
 
-        let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
         let treasury: Address = env
             .storage()
             .instance()
             .get(&DataKey::EmergencyTreasury)
             .unwrap();
-        let token_client = token::Client::new(&env, &usdc_token);
+        let token_addr = Self::token_address(&env, &asset_type);
+        let token_client = token::Client::new(&env, &token_addr);
         let contract_address = env.current_contract_address();
         let amount = token_client.balance(&contract_address);
         if amount <= 0 {
@@ -907,7 +916,7 @@ impl PaymentEscrowContract {
             .set(&DataKey::IsPaused, &true);
         env.events().publish(
             ("ESCROW", "emergency_drain"),
-            EmergencyDrainEvent { amount, caller },
+            EmergencyDrainEvent { amount, caller, asset_type },
         );
 
         amount
