@@ -340,6 +340,36 @@ fn test_list_pending_removes_cancelled_change() {
 }
 
 // ---------------------------------------------------------------------------
+// Issue #45 — execution window (grace period) enforcement
+// ---------------------------------------------------------------------------
+
+#[test]
+#[should_panic(expected = "Change execution window has expired")]
+fn test_apply_change_after_grace_period_rejected() {
+    let (env, client, admin) = setup();
+    let id = client.schedule_change(&admin, &param(&env), &value(&env), &VALID_DELAY);
+
+    // Advance past execute_after + GRACE_PERIOD_LEDGERS (241_920).
+    // Starting sequence is 100; execute_after = 100 + 17_280 = 17_380.
+    // Expiry = 17_380 + 241_920 = 259_300; advance one more ledger past that.
+    env.ledger().set_sequence_number(259_301);
+    client.apply_change(&admin, &id);
+}
+
+#[test]
+fn test_apply_change_at_last_valid_ledger_succeeds() {
+    let (env, client, admin) = setup();
+    let id = client.schedule_change(&admin, &param(&env), &value(&env), &VALID_DELAY);
+
+    // execute_after = 100 + 17_280 = 17_380; last valid = 17_380 + 241_920 = 259_300.
+    env.ledger().set_sequence_number(259_300);
+    client.apply_change(&admin, &id);
+
+    let change = client.get_change(&id);
+    assert_eq!(change.status, ChangeStatus::Applied);
+}
+
+// ---------------------------------------------------------------------------
 // Issue #1051 — prune_change frees storage
 // ---------------------------------------------------------------------------
 
