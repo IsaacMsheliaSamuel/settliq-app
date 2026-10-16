@@ -49,6 +49,8 @@ impl SlippageProtectionContract {
     /// Same as `check_slippage`, but uses the per-pair override for
     /// (asset_a, asset_b) when one has been set, falling back to the
     /// global `MaxSlippageBps` otherwise.
+    ///
+    /// The pair is unordered: (A, B) and (B, A) resolve to the same override.
     pub fn check_slippage_for_pair(
         env: Env,
         asset_a: soroban_sdk::Address,
@@ -81,8 +83,9 @@ impl SlippageProtectionContract {
     }
 
     /// Admin: set a per-pair override for the maximum allowed slippage in
-    /// basis points. The pair is unordered from the caller's perspective;
-    /// lookups are keyed on the exact (asset_a, asset_b) order passed in.
+    /// basis points. The pair is unordered: setting slippage for (A, B) is
+    /// identical to setting it for (B, A), and lookups always resolve to the
+    /// same entry regardless of argument order.
     pub fn set_pair_max_slippage(
         env: Env,
         caller: soroban_sdk::Address,
@@ -92,9 +95,10 @@ impl SlippageProtectionContract {
     ) {
         caller.require_auth();
         Self::require_admin(&env, &caller);
+        let (k1, k2) = Self::canonical_pair(&env, asset_a, asset_b);
         env.storage()
             .instance()
-            .set(&DataKey::PairMaxSlippageBps(asset_a, asset_b), &bps);
+            .set(&DataKey::PairMaxSlippageBps(k1, k2), &bps);
     }
 
     pub fn get_max_slippage(env: Env) -> u32 {
@@ -131,14 +135,31 @@ impl SlippageProtectionContract {
 
     /// Resolves the effective max slippage for a pair: the per-pair
     /// override when present, otherwise the global default.
+    ///
+    /// The lookup is commutative: (A, B) and (B, A) resolve to the same entry.
     fn pair_max_slippage(env: &Env, asset_a: &Address, asset_b: &Address) -> u32 {
+        let (k1, k2) = Self::canonical_pair(env, asset_a.clone(), asset_b.clone());
         env.storage()
             .instance()
-            .get(&DataKey::PairMaxSlippageBps(
-                asset_a.clone(),
-                asset_b.clone(),
-            ))
+            .get(&DataKey::PairMaxSlippageBps(k1, k2))
             .unwrap_or_else(|| Self::global_max_slippage(env))
+    }
+
+    /// Return a canonical (deterministic) ordering of two addresses so that
+    /// (A, B) and (B, A) always map to the same storage key.
+    ///
+    /// Ordering is derived from the XDR byte representation of each address
+    /// via `soroban_sdk::xdr::ToXdr`, which produces a stable unique byte
+    /// sequence for any two distinct addresses.
+    fn canonical_pair(env: &Env, a: Address, b: Address) -> (Address, Address) {
+        use soroban_sdk::xdr::ToXdr;
+        let a_bytes = a.clone().to_xdr(env);
+        let b_bytes = b.clone().to_xdr(env);
+        if a_bytes <= b_bytes {
+            (a, b)
+        } else {
+            (b, a)
+        }
     }
 
     fn assert_within_tolerance(env: &Env, expected: i128, actual: i128, max_bps: u32) {

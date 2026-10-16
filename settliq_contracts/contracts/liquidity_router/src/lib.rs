@@ -173,6 +173,11 @@ impl LiquidityRouter {
     /// Returns SorobanAMM if depth is sufficient (impact below the configured
     /// threshold), otherwise returns StellarClassicDEX and emits an event.
     pub fn check_and_route(env: Env, pool_address: Address, amount_in: i128) -> Route {
+        // Issue #46: Reject zero and negative input amounts immediately.
+        if amount_in <= 0 {
+            panic!("amount_in must be > 0");
+        }
+
         // Issue #1025: Validate pool_address against allowlist before calling get_reserves
         let pools: Vec<Address> = env.storage().instance().get(&DataKey::ApprovedPools)
             .unwrap_or_else(|| Vec::new(&env));
@@ -193,11 +198,11 @@ impl LiquidityRouter {
         // be read) rather than propagating the error.
         let amm_client = AmmClient::new(&env, &pool_address);
         let reserves = match amm_client.try_get_reserves() {
-            Ok(Ok((reserve_a, _reserve_b))) => Some(reserve_a),
+            Ok(Ok((ra, rb))) => Some((ra, rb)),
             Ok(Err(_)) | Err(_) => None,
         };
 
-        let reserve_a = match reserves {
+        let (reserve_a, reserve_b) = match reserves {
             Some(r) => r,
             None => {
                 // Cross-contract call failed or reverted: degrade gracefully to
@@ -214,20 +219,27 @@ impl LiquidityRouter {
             }
         };
 
-        // Issue #1081: Validate the cross-contract AMM response before trusting it.
-        // A misbehaving or malicious pool could return a negative or nonsensical
-        // reserve, which would otherwise be used uncritically in the depth check.
-        if reserve_a <= 0 {
+        // Issue #1081: Validate both AMM reserves before trusting them.
+        // A misbehaving or malicious pool could return negative or nonsensical
+        // values, which would otherwise corrupt the depth check.
+        if reserve_a <= 0 || reserve_b <= 0 {
             panic!("invalid pool reserves");
         }
 
+        // Issue #23: Select the relevant reserve based on swap direction.
+        // A swap consuming token A reduces reserve_a; a swap consuming token B
+        // reduces reserve_b. Using the wrong reserve would mis-evaluate depth
+        // for asymmetric pools.
+        let relevant_reserve = if is_token_a { reserve_a } else { reserve_b };
+
         // Issue #1085: Depth check against the admin-configurable threshold.
-        // amount_in must be less than threshold_bps of reserves: S < R * bps / 10000
+        // amount_in must be less than threshold_bps of the relevant reserve:
+        //   S < R * bps / 10000
         let threshold_bps: u32 = env.storage().instance()
             .get(&DataKey::DepthThresholdBps)
             .unwrap_or(DEFAULT_DEPTH_THRESHOLD_BPS);
 
-        if amount_in < reserve_a * (threshold_bps as i128) / 10_000 {
+        if amount_in < relevant_reserve * (threshold_bps as i128) / 10_000 {
             Route::SorobanAMM
         } else {
             // Emit FallbackRouteUsed event
@@ -236,7 +248,7 @@ impl LiquidityRouter {
                 FallbackRouteUsed {
                     pool_id: pool_address,
                     amount: amount_in,
-                    reserve: reserve_a,
+                    reserve: relevant_reserve,
                 },
             );
             Route::StellarClassicDEX

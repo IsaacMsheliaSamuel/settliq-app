@@ -128,3 +128,85 @@ fn test_set_max_slippage_rejects_out_of_range_bps() {
     let (_env, client, admin) = setup_env();
     client.set_max_slippage(&admin, &10_001);
 }
+
+// ── Issue #24: commutative pair slippage lookup ───────────────────────────────
+
+#[test]
+fn test_set_pair_and_query_same_order() {
+    let (env, client, admin) = setup_env();
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+
+    client.set_pair_max_slippage(&admin, &token_a, &token_b, &200);
+    // Querying (A, B) must return the configured value.
+    assert_eq!(client.get_pair_max_slippage(&token_a, &token_b), 200);
+}
+
+#[test]
+fn test_set_pair_ab_query_reversed_ba() {
+    let (env, client, admin) = setup_env();
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+
+    // Store with (A, B) order.
+    client.set_pair_max_slippage(&admin, &token_a, &token_b, &200);
+
+    // Querying (B, A) must return the same value — lookup is commutative.
+    assert_eq!(client.get_pair_max_slippage(&token_b, &token_a), 200);
+}
+
+#[test]
+fn test_set_pair_ba_query_reversed_ab() {
+    let (env, client, admin) = setup_env();
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+
+    // Store with (B, A) order.
+    client.set_pair_max_slippage(&admin, &token_b, &token_a, &150);
+
+    // Querying (A, B) must return the same value.
+    assert_eq!(client.get_pair_max_slippage(&token_a, &token_b), 150);
+}
+
+#[test]
+fn test_check_slippage_for_pair_reversed_order_applies_override() {
+    let (env, client, admin) = setup_env();
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+
+    // Set a tighter per-pair limit (50 bps) for (A, B).
+    client.set_pair_max_slippage(&admin, &token_a, &token_b, &50);
+
+    // A 0.3% deviation (30 bps) passes under both the global (100 bps) and
+    // the per-pair (50 bps) overrides.
+    client.check_slippage_for_pair(&token_b, &token_a, &10_000, &9_970);
+}
+
+#[test]
+#[should_panic(expected = "SlippageExceeded")]
+fn test_check_slippage_for_pair_reversed_order_enforces_override() {
+    let (env, client, admin) = setup_env();
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+
+    // Set a tight per-pair limit (50 bps) for (A, B).
+    client.set_pair_max_slippage(&admin, &token_a, &token_b, &50);
+
+    // A 0.8% deviation (80 bps) exceeds 50 bps regardless of argument order.
+    // Querying (B, A) must apply the override, not the global default (100 bps).
+    client.check_slippage_for_pair(&token_b, &token_a, &10_000, &9_920);
+}
+
+#[test]
+fn test_pair_override_does_not_affect_other_pairs() {
+    let (env, client, admin) = setup_env();
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let token_c = Address::generate(&env);
+
+    // Set tight override for (A, B).
+    client.set_pair_max_slippage(&admin, &token_a, &token_b, &50);
+
+    // Pair (A, C) must still use the global default (100 bps).
+    assert_eq!(client.get_pair_max_slippage(&token_a, &token_c), 100);
+}

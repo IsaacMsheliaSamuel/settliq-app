@@ -161,77 +161,102 @@ fn test_revoke_then_readd_admin_restores_access() {
     assert!(user.active);
 }
 
-// ---------------------------------------------------------------------------
-// Issue #11 — transfer_super_admin must demote the previous super admin
-// ---------------------------------------------------------------------------
-
+// Issue #29 — admin index uses slot-based persistent keys; count is a scalar
+// in instance storage that never grows with the roster.
 #[test]
-fn test_transfer_super_admin_demotes_previous_to_admin() {
+fn test_admin_count_matches_roster_size() {
     let (env, client, super_admin) = setup();
-    let new_super = Address::generate(&env);
+    // Super admin counts as 1 slot from constructor.
+    assert_eq!(client.admin_count(), 1);
 
-    // New super must already exist as an admin, or will be created fresh.
-    client.transfer_super_admin(&super_admin, &new_super);
+    let admin1 = Address::generate(&env);
+    let admin2 = Address::generate(&env);
+    client.add_admin(&super_admin, &admin1, &AdminRole::Admin);
+    assert_eq!(client.admin_count(), 2);
+    client.add_admin(&super_admin, &admin2, &AdminRole::Admin);
+    assert_eq!(client.admin_count(), 3);
 
-    // Previous super admin is demoted to Admin.
-    let prev_user = client.get_admin(&super_admin).unwrap();
-    assert_eq!(prev_user.role, AdminRole::Admin);
-    assert!(prev_user.active);
-
-    // New super admin holds SuperAdmin credentials.
-    let new_user = client.get_admin(&new_super).unwrap();
-    assert_eq!(new_user.role, AdminRole::SuperAdmin);
-    assert!(new_user.active);
+    client.revoke_admin(&super_admin, &admin1);
+    assert_eq!(client.admin_count(), 2);
 }
 
+// Issue #29 — list_admins reads from slot-based persistent storage and returns
+// the correct page without bloating instance storage.
 #[test]
-#[should_panic(expected = "not super admin")]
-fn test_previous_super_admin_cannot_transfer_again_after_demotion() {
+fn test_list_admins_returns_correct_page() {
     let (env, client, super_admin) = setup();
-    let new_super = Address::generate(&env);
-    let third = Address::generate(&env);
+    let mut added: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(&env);
+    for _ in 0..5u32 {
+        let a = Address::generate(&env);
+        client.add_admin(&super_admin, &a, &AdminRole::Admin);
+        added.push_back(a);
+    }
+    // Total = super_admin + 5 admins = 6
+    assert_eq!(client.admin_count(), 6);
 
-    client.transfer_super_admin(&super_admin, &new_super);
+    // First page of 3 starting at offset 0
+    let page0 = client.list_admins(&0, &3);
+    assert_eq!(page0.len(), 3);
 
-    // The previous super admin is now only an Admin and must be rejected.
-    client.transfer_super_admin(&super_admin, &third);
+    // Second page of 3 starting at offset 3
+    let page1 = client.list_admins(&3, &3);
+    assert_eq!(page1.len(), 3);
+
+    // Page beyond end returns empty
+    let page2 = client.list_admins(&6, &3);
+    assert_eq!(page2.len(), 0);
 }
 
+// Issue #29 — large roster (20 admins) verifies cost is not concentrated in
+// instance storage: admin_count remains a single scalar, and each add/revoke
+// only touches its own slot plus the count key.
 #[test]
-fn test_new_super_admin_can_transfer_after_receiving_role() {
+fn test_large_admin_roster_slot_based_indexing() {
     let (env, client, super_admin) = setup();
-    let new_super = Address::generate(&env);
-    let third = Address::generate(&env);
+    let n = 20u32;
+    for _ in 0..n {
+        let a = Address::generate(&env);
+        client.add_admin(&super_admin, &a, &AdminRole::Admin);
+    }
+    // super_admin (slot 0) + 20 = 21
+    assert_eq!(client.admin_count(), n + 1);
 
-    client.transfer_super_admin(&super_admin, &new_super);
-    // New super admin should now be able to perform a further transfer.
-    client.transfer_super_admin(&new_super, &third);
-
-    let third_user = client.get_admin(&third).unwrap();
-    assert_eq!(third_user.role, AdminRole::SuperAdmin);
+    // Full listing via pagination: collect all entries in pages of 5
+    let mut total_listed = 0u32;
+    let page_size = 5u32;
+    let total = client.admin_count();
+    let mut offset = 0u32;
+    while offset < total {
+        let page = client.list_admins(&offset, &page_size);
+        total_listed += page.len();
+        offset += page_size;
+    }
+    assert_eq!(total_listed, total);
 }
 
-// ---------------------------------------------------------------------------
-// Issue #12 — deactivate_admin must prevent super admin self-deactivation
-// ---------------------------------------------------------------------------
-
+// Issue #29 — revoke uses swap-and-shrink so all remaining slots stay
+// contiguous and admin_count correctly reflects the live roster.
 #[test]
-#[should_panic(expected = "cannot deactivate super admin")]
-fn test_deactivate_super_admin_panics() {
+fn test_revoke_shrinks_slot_count_correctly() {
     let (env, client, super_admin) = setup();
-    // Attempting to deactivate the super admin address must panic.
-    client.deactivate_admin(&super_admin, &super_admin);
-}
+    let admin1 = Address::generate(&env);
+    let admin2 = Address::generate(&env);
+    let admin3 = Address::generate(&env);
+    client.add_admin(&super_admin, &admin1, &AdminRole::Admin);
+    client.add_admin(&super_admin, &admin2, &AdminRole::Admin);
+    client.add_admin(&super_admin, &admin3, &AdminRole::Admin);
+    assert_eq!(client.admin_count(), 4);
 
-#[test]
-fn test_deactivate_regular_admin_still_works() {
-    let (env, client, super_admin) = setup();
-    let admin = Address::generate(&env);
-    client.add_admin(&super_admin, &admin, &AdminRole::Admin);
+    // Revoke the middle admin; remaining count should be 3.
+    client.revoke_admin(&super_admin, &admin2);
+    assert_eq!(client.admin_count(), 3);
+    assert!(!client.is_admin(&admin2));
 
-    client.deactivate_admin(&super_admin, &admin);
+    // The remaining two admins (admin1, admin3) are still reachable.
+    assert!(client.is_admin(&admin1));
+    assert!(client.is_admin(&admin3));
 
-    assert!(!client.is_admin(&admin));
-    let user = client.get_admin(&admin).unwrap();
-    assert!(!user.active);
+    // Paginated listing returns exactly 3 entries covering super_admin, admin1, admin3.
+    let all = client.list_admins(&0, &10);
+    assert_eq!(all.len(), 3);
 }

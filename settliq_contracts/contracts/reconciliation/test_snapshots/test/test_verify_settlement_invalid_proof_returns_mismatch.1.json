@@ -18,7 +18,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
                 },
                 {
-                  "bytes": "2322c1a40676f34c024cfcf614c5fc4e09071951e9c4c7b176530bea1a6f94de"
+                  "bytes": "097f0f12ef8cec432d95b0fad5912e425be407cee8a41bf6b8d8c08b1cc03d18"
                 }
               ]
             }
@@ -114,7 +114,7 @@
                         "symbol": "merkle_root"
                       },
                       "val": {
-                        "bytes": "2322c1a40676f34c024cfcf614c5fc4e09071951e9c4c7b176530bea1a6f94de"
+                        "bytes": "097f0f12ef8cec432d95b0fad5912e425be407cee8a41bf6b8d8c08b1cc03d18"
                       }
                     },
                     {
@@ -192,7 +192,7 @@
                                 "symbol": "merkle_root"
                               },
                               "val": {
-                                "bytes": "2322c1a40676f34c024cfcf614c5fc4e09071951e9c4c7b176530bea1a6f94de"
+                                "bytes": "097f0f12ef8cec432d95b0fad5912e425be407cee8a41bf6b8d8c08b1cc03d18"
                               }
                             },
                             {

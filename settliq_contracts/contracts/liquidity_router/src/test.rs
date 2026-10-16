@@ -45,6 +45,22 @@ mod mock_negative_amm {
 }
 pub use mock_negative_amm::MockNegativeReservesAmm;
 
+/// Asymmetric pool: reserve_a is deep (100_000) but reserve_b is shallow (5_000).
+/// Used to verify that swap direction correctly selects the relevant reserve.
+mod mock_asymmetric_amm {
+    use super::*;
+    #[contract]
+    pub struct MockAsymmetricAmm;
+
+    #[contractimpl]
+    impl MockAsymmetricAmm {
+        pub fn get_reserves(_env: Env) -> (i128, i128) {
+            (100_000, 5_000)
+        }
+    }
+}
+pub use mock_asymmetric_amm::MockAsymmetricAmm;
+
 mod broken_amm {
     use super::*;
     #[contract]
@@ -80,7 +96,7 @@ fn test_initialize_sets_admin_and_empty_allowlist() {
     // A pool that was never added must be rejected, proving the allowlist
     // was initialized to an empty set.
     let pool = env.register(MockAmm, ());
-    let result = client.try_check_and_route(&pool, &1_000);
+    let result = client.try_check_and_route(&pool, &1_000, &true);
     assert!(result.is_err());
 }
 
@@ -91,7 +107,7 @@ fn test_add_pool_allows_routing() {
 
     client.add_pool(&admin, &pool);
 
-    let route = client.check_and_route(&pool, &1_000);
+    let route = client.check_and_route(&pool, &1_000, &true);
     assert_eq!(route, Route::SorobanAMM);
 }
 
@@ -104,7 +120,7 @@ fn test_add_pool_duplicate_is_noop() {
     // Adding the same pool again must be a no-op (no panic, still approved).
     client.add_pool(&admin, &pool);
 
-    let route = client.check_and_route(&pool, &1_000);
+    let route = client.check_and_route(&pool, &1_000, &true);
     assert_eq!(route, Route::SorobanAMM);
 }
 
@@ -116,7 +132,7 @@ fn test_remove_pool_revokes_approval() {
     client.add_pool(&admin, &pool);
     client.remove_pool(&admin, &pool);
 
-    let result = client.try_check_and_route(&pool, &1_000);
+    let result = client.try_check_and_route(&pool, &1_000, &true);
     assert!(result.is_err());
 }
 
@@ -128,7 +144,7 @@ fn test_remove_pool_not_present_is_noop() {
     // Removing a pool that was never added must not panic.
     client.remove_pool(&admin, &pool);
 
-    let result = client.try_check_and_route(&pool, &1_000);
+    let result = client.try_check_and_route(&pool, &1_000, &true);
     assert!(result.is_err());
 }
 
@@ -139,7 +155,7 @@ fn test_check_and_route_panics_for_unapproved_pool() {
     let pool = env.register(MockAmm, ());
 
     // Pool was never added to the allowlist.
-    client.check_and_route(&pool, &1_000);
+    client.check_and_route(&pool, &1_000, &true);
 }
 
 #[test]
@@ -149,7 +165,7 @@ fn test_deep_pool_routing() {
     client.add_pool(&admin, &pool);
 
     // amount_in (1_000) < reserve (100_000) / 10 => SorobanAMM
-    let route = client.check_and_route(&pool, &1_000);
+    let route = client.check_and_route(&pool, &1_000, &true);
     assert_eq!(route, Route::SorobanAMM);
 }
 
@@ -160,7 +176,7 @@ fn test_shallow_pool_routing() {
     client.add_pool(&admin, &pool);
 
     // amount_in (50_000) >= reserve (100_000) / 10 => StellarClassicDEX
-    let route = client.check_and_route(&pool, &50_000);
+    let route = client.check_and_route(&pool, &50_000, &true);
     assert_eq!(route, Route::StellarClassicDEX);
 }
 
@@ -171,7 +187,7 @@ fn test_borderline_depth() {
     client.add_pool(&admin, &pool);
 
     // amount_in (10_000) == reserve (100_000) / 10 => not strictly less => StellarClassicDEX
-    let route = client.check_and_route(&pool, &10_000);
+    let route = client.check_and_route(&pool, &10_000, &true);
     assert_eq!(route, Route::StellarClassicDEX);
 }
 
@@ -186,7 +202,7 @@ fn test_default_depth_threshold_is_1000_bps() {
     assert_eq!(client.get_depth_threshold_bps(), 1000);
 
     // amount_in (1_000) < reserve (100_000) * 1000 / 10_000 => SorobanAMM
-    let route = client.check_and_route(&pool, &1_000);
+    let route = client.check_and_route(&pool, &1_000, &true);
     assert_eq!(route, Route::SorobanAMM);
 }
 
@@ -202,11 +218,11 @@ fn test_set_depth_threshold_bps_updates_routing() {
 
     // amount_in (50_000) < reserve (100_000) * 5000 / 10_000 (50_000) is false,
     // so it still routes to the classic DEX at the boundary.
-    let route = client.check_and_route(&pool, &50_000);
+    let route = client.check_and_route(&pool, &50_000, &true);
     assert_eq!(route, Route::StellarClassicDEX);
 
     // amount_in (40_000) < 50_000 => SorobanAMM under the raised threshold.
-    let route = client.check_and_route(&pool, &40_000);
+    let route = client.check_and_route(&pool, &40_000, &true);
     assert_eq!(route, Route::SorobanAMM);
 }
 
@@ -221,7 +237,7 @@ fn test_set_depth_threshold_bps_lowers_threshold() {
 
     // amount_in (1_000) < reserve (100_000) * 100 / 10_000 (1_000) is false,
     // so it now routes to the classic DEX.
-    let route = client.check_and_route(&pool, &1_000);
+    let route = client.check_and_route(&pool, &1_000, &true);
     assert_eq!(route, Route::StellarClassicDEX);
 }
 
@@ -313,7 +329,7 @@ fn test_negative_reserves_rejected() {
     let pool_address = env.register(MockNegativeReservesAmm, ());
     router_client.add_pool(&admin, &pool_address);
 
-    router_client.check_and_route(&pool_address, &50i128);
+    router_client.check_and_route(&pool_address, &50i128, &true);
 }
 
 #[test]
@@ -323,11 +339,45 @@ fn test_zero_reserves_rejected() {
     let pool_address = env.register(MockZeroReservesAmm, ());
     router_client.add_pool(&admin, &pool_address);
 
-    router_client.check_and_route(&pool_address, &50i128);
+    router_client.check_and_route(&pool_address, &50i128, &true);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #46 — check_and_route rejects zero and negative amount_in
+// ---------------------------------------------------------------------------
+
+#[test]
+#[should_panic(expected = "amount_in must be > 0")]
+fn test_check_and_route_zero_amount_panics() {
+    let (env, client, admin) = setup();
+    let pool = env.register(MockAmm, ());
+    client.add_pool(&admin, &pool);
+
+    client.check_and_route(&pool, &0i128);
 }
 
 #[test]
-fn test_reverting_pool_falls_back_to_classic_dex() {
+#[should_panic(expected = "amount_in must be > 0")]
+fn test_check_and_route_negative_amount_panics() {
+    let (env, client, admin) = setup();
+    let pool = env.register(MockAmm, ());
+    client.add_pool(&admin, &pool);
+
+    client.check_and_route(&pool, &-1i128);
+}
+
+#[test]
+fn test_check_and_route_positive_amount_succeeds() {
+    let (env, client, admin) = setup();
+    let pool = env.register(MockAmm, ());
+    client.add_pool(&admin, &pool);
+
+    // A strictly positive amount_in must pass validation and route normally.
+    let route = client.check_and_route(&pool, &1i128);
+    assert_eq!(route, Route::SorobanAMM);
+}
+
+
     let (env, router_client, admin) = setup();
 
     // An approved pool that no longer implements `AmmInterface` (e.g. upgraded
@@ -337,7 +387,7 @@ fn test_reverting_pool_falls_back_to_classic_dex() {
 
     // A failed `get_reserves` call must be treated the same as a shallow pool:
     // fall back to `Route::StellarClassicDEX` instead of panicking the whole call.
-    let route = router_client.check_and_route(&pool_address, &50i128);
+    let route = router_client.check_and_route(&pool_address, &50i128, &true);
     assert_eq!(route, Route::StellarClassicDEX);
 
     // The fallback path emits the same event as the depth-based fallback.
@@ -347,4 +397,65 @@ fn test_reverting_pool_falls_back_to_classic_dex() {
     let event = events.last().unwrap();
     assert_eq!(event.0, router_client.address);
     assert_eq!(event.1.len(), 1);
+}
+
+// ── Issue #23: direction-aware depth check tests ──────────────────────────────
+
+/// MockAsymmetricAmm returns reserve_a = 100_000, reserve_b = 5_000.
+/// The default threshold is 1000 bps (10%).
+///
+/// is_token_a = true  → relevant reserve = 100_000; 10% = 10_000
+///   amount_in = 1_000  → 1_000 < 10_000 → SorobanAMM
+///
+/// is_token_a = false → relevant reserve = 5_000; 10% = 500
+///   amount_in = 1_000  → 1_000 >= 500   → StellarClassicDEX
+
+#[test]
+fn test_token_a_direction_uses_reserve_a() {
+    let (env, client, admin) = setup();
+    let pool = env.register(MockAsymmetricAmm, ());
+    client.add_pool(&admin, &pool);
+
+    // Swap into token A: reserve_a = 100_000; threshold 10% = 10_000.
+    // amount_in 1_000 < 10_000 → deep enough → SorobanAMM.
+    let route = client.check_and_route(&pool, &1_000, &true);
+    assert_eq!(route, Route::SorobanAMM);
+}
+
+#[test]
+fn test_token_b_direction_uses_reserve_b() {
+    let (env, client, admin) = setup();
+    let pool = env.register(MockAsymmetricAmm, ());
+    client.add_pool(&admin, &pool);
+
+    // Swap into token B: reserve_b = 5_000; threshold 10% = 500.
+    // amount_in 1_000 >= 500 → too shallow → StellarClassicDEX.
+    let route = client.check_and_route(&pool, &1_000, &false);
+    assert_eq!(route, Route::StellarClassicDEX);
+}
+
+#[test]
+fn test_symmetric_pool_same_result_both_directions() {
+    let (env, client, admin) = setup();
+    let pool = env.register(MockAmm, ());
+    client.add_pool(&admin, &pool);
+
+    // Both reserves are 100_000; routing must be identical regardless of direction.
+    let route_a = client.check_and_route(&pool, &1_000, &true);
+    let route_b = client.check_and_route(&pool, &1_000, &false);
+    assert_eq!(route_a, route_b);
+    assert_eq!(route_a, Route::SorobanAMM);
+}
+
+#[test]
+fn test_both_reserves_validated_positive() {
+    // MockZeroReservesAmm returns (0, 100_000).
+    // Even when routing token B (reserve_b = 100_000 > 0), reserve_a = 0 must
+    // cause a rejection because both reserves are validated before routing.
+    let (env, client, admin) = setup();
+    let pool = env.register(MockZeroReservesAmm, ());
+    client.add_pool(&admin, &pool);
+
+    let result = client.try_check_and_route(&pool, &50i128, &false);
+    assert!(result.is_err());
 }

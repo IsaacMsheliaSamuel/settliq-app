@@ -254,18 +254,37 @@ impl ReconciliationContract {
         }
     }
 
+    /// Hash a leaf node following RFC 6962 domain separation.
+    ///
+    /// A `0x00` prefix byte is prepended to the payment ID before hashing so
+    /// that leaf hashes can never collide with internal node hashes (which use
+    /// `0x01`).  Without this separation an attacker could supply a 64-byte
+    /// concatenation of two sibling hashes as a "leaf", producing a hash
+    /// identical to an internal node and forging a valid Merkle proof for a
+    /// payment ID that was never settled (second-preimage attack).
     pub(crate) fn hash_leaf(env: &Env, payment_id: &BytesN<32>) -> BytesN<32> {
         let id_arr = payment_id.to_array();
-        env.crypto().sha256(&Bytes::from_slice(env, &id_arr)).into()
+        // 0x00 || payment_id  (33 bytes total)
+        let mut prefixed = [0u8; 33];
+        prefixed[0] = 0x00;
+        prefixed[1..].copy_from_slice(&id_arr);
+        env.crypto().sha256(&Bytes::from_slice(env, &prefixed)).into()
     }
 
+    /// Hash an internal node following RFC 6962 domain separation.
+    ///
+    /// A `0x01` prefix byte is prepended to `left || right` before hashing so
+    /// that internal node hashes can never collide with leaf hashes (which use
+    /// `0x00`).
     pub(crate) fn hash_pair(env: &Env, left: &BytesN<32>, right: &BytesN<32>) -> BytesN<32> {
         let left_arr = left.to_array();
         let right_arr = right.to_array();
 
-        let mut combined = [0u8; 64];
-        combined[..32].copy_from_slice(&left_arr);
-        combined[32..].copy_from_slice(&right_arr);
+        // 0x01 || left || right  (65 bytes total)
+        let mut combined = [0u8; 65];
+        combined[0] = 0x01;
+        combined[1..33].copy_from_slice(&left_arr);
+        combined[33..].copy_from_slice(&right_arr);
 
         env.crypto().sha256(&Bytes::from_slice(env, &combined)).into()
     }
