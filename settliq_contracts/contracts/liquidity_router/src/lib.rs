@@ -60,16 +60,15 @@ pub struct LiquidityRouter;
 
 #[contractimpl]
 impl LiquidityRouter {
-    // Issue #1025: Constructor to initialize admin
-    // Issue #1079: Require auth and guard against re-initialization
+    // Issue #1025: Constructor to initialize admin atomically at deployment time.
+    // Issue #1079: Using __constructor eliminates the front-running window that
+    // existed when initialize() was a separate post-deploy call: an attacker
+    // could have submitted their own initialize() transaction between the deploy
+    // and the legitimate initialize() call, seizing the admin role.
     // Issue #1080: Store config singletons in instance() storage so their TTL
     // is bumped automatically with every contract call.
-    pub fn initialize(env: Env, admin: Address) {
+    pub fn __constructor(env: Env, admin: Address) {
         admin.require_auth();
-
-        if env.storage().instance().has(&DataKey::Admin) {
-            panic!("already initialized");
-        }
 
         env.storage().instance().set(&DataKey::Admin, &admin);
         let pools: Vec<Address> = Vec::new(&env);

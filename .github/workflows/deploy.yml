@@ -202,7 +202,6 @@ jobs:
           }
 
           # --- no constructor ------------------------------------------------
-          deploy_contract liquidity_router      wasm/liquidity_router.wasm
           deploy_contract payment_request       wasm/payment_request.wasm
 
           # liquidity_router doesn't use Soroban's `__constructor` convention,
@@ -225,6 +224,8 @@ jobs:
             --max_amount "$BATCH_PAYMENTS_MAX_AMOUNT"
 
           # --- admin only ----------------------------------------------------
+          deploy_contract liquidity_router      wasm/liquidity_router.wasm \
+            --admin "$DEPLOY_ADMIN"
           deploy_contract admin_auth            wasm/admin_auth.wasm \
             --super_admin "$DEPLOY_ADMIN"
           deploy_contract admin_timelock        wasm/admin_timelock.wasm \
@@ -422,7 +423,6 @@ jobs:
           }
 
           # --- no constructor ------------------------------------------------
-          deploy_contract liquidity_router      wasm/liquidity_router.wasm
           deploy_contract payment_request       wasm/payment_request.wasm
 
           # liquidity_router doesn't use Soroban's `__constructor` convention,
@@ -445,6 +445,8 @@ jobs:
             --max_amount "$BATCH_PAYMENTS_MAX_AMOUNT"
 
           # --- admin only ----------------------------------------------------
+          deploy_contract liquidity_router      wasm/liquidity_router.wasm \
+            --admin "$DEPLOY_ADMIN"
           deploy_contract admin_auth            wasm/admin_auth.wasm \
             --super_admin "$DEPLOY_ADMIN"
           deploy_contract admin_timelock        wasm/admin_timelock.wasm \
