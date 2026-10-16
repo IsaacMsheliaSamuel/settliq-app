@@ -6,7 +6,7 @@ import {
   UpdateDateColumn,
   DeleteDateColumn,
 } from 'typeorm';
-import { Exclude, Transform } from 'class-transformer';
+import { Exclude } from 'class-transformer';
 
 export enum MerchantStatus {
   ACTIVE = 'active',
@@ -47,9 +47,8 @@ export class Merchant {
   @Column({ type: 'enum', enum: MerchantRole, default: MerchantRole.MERCHANT })
   role: MerchantRole;
 
-  @Column({ nullable: true })
-  apiKey: string;
-
+  // Raw API keys are never stored at rest. Only the bcrypt hash is persisted.
+  // The plaintext key is returned once upon generation and never stored here.
   @Exclude()
   @Column({ nullable: true })
   apiKeyHash: string;

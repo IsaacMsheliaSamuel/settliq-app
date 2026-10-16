@@ -12,10 +12,9 @@ fn make_payment(env: &Env, amount: i128, memo: &str) -> PaymentInput {
 }
 
 fn deploy_and_init(env: &Env, min_amount: i128, max_amount: i128) -> (BatchPaymentContractClient, Address) {
-    let contract_id = env.register_contract(None, BatchPaymentContract);
-    let client = BatchPaymentContractClient::new(env, &contract_id);
     let admin = Address::generate(env);
-    client.init(&admin, &min_amount, &max_amount);
+    let contract_id = env.register(BatchPaymentContract, (&admin, &min_amount, &max_amount));
+    let client = BatchPaymentContractClient::new(env, &contract_id);
     (client, admin)
 }
 

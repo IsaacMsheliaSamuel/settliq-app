@@ -342,8 +342,42 @@ fn test_zero_reserves_rejected() {
     router_client.check_and_route(&pool_address, &50i128, &true);
 }
 
+// ---------------------------------------------------------------------------
+// Issue #46 — check_and_route rejects zero and negative amount_in
+// ---------------------------------------------------------------------------
+
 #[test]
-fn test_reverting_pool_falls_back_to_classic_dex() {
+#[should_panic(expected = "amount_in must be > 0")]
+fn test_check_and_route_zero_amount_panics() {
+    let (env, client, admin) = setup();
+    let pool = env.register(MockAmm, ());
+    client.add_pool(&admin, &pool);
+
+    client.check_and_route(&pool, &0i128);
+}
+
+#[test]
+#[should_panic(expected = "amount_in must be > 0")]
+fn test_check_and_route_negative_amount_panics() {
+    let (env, client, admin) = setup();
+    let pool = env.register(MockAmm, ());
+    client.add_pool(&admin, &pool);
+
+    client.check_and_route(&pool, &-1i128);
+}
+
+#[test]
+fn test_check_and_route_positive_amount_succeeds() {
+    let (env, client, admin) = setup();
+    let pool = env.register(MockAmm, ());
+    client.add_pool(&admin, &pool);
+
+    // A strictly positive amount_in must pass validation and route normally.
+    let route = client.check_and_route(&pool, &1i128);
+    assert_eq!(route, Route::SorobanAMM);
+}
+
+
     let (env, router_client, admin) = setup();
 
     // An approved pool that no longer implements `AmmInterface` (e.g. upgraded

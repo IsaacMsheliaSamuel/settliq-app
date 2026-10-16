@@ -169,17 +169,15 @@ impl LiquidityRouter {
             .unwrap_or(DEFAULT_DEPTH_THRESHOLD_BPS)
     }
 
-    /// Checks if the AMM pool has sufficient depth for a swap and returns the
-    /// recommended route.
-    ///
-    /// `is_token_a` indicates which asset is being consumed by the swap:
-    /// - `true`  → the trade consumes token A (use reserve_a for the depth check)
-    /// - `false` → the trade consumes token B (use reserve_b for the depth check)
-    ///
-    /// Returns `SorobanAMM` when the input amount is below the configured depth
-    /// threshold for the relevant reserve; otherwise emits `FallbackRouteUsed`
-    /// and returns `StellarClassicDEX`.
-    pub fn check_and_route(env: Env, pool_address: Address, amount_in: i128, is_token_a: bool) -> Route {
+    /// Checks if the AMM pool has sufficient depth for a swap.
+    /// Returns SorobanAMM if depth is sufficient (impact below the configured
+    /// threshold), otherwise returns StellarClassicDEX and emits an event.
+    pub fn check_and_route(env: Env, pool_address: Address, amount_in: i128) -> Route {
+        // Issue #46: Reject zero and negative input amounts immediately.
+        if amount_in <= 0 {
+            panic!("amount_in must be > 0");
+        }
+
         // Issue #1025: Validate pool_address against allowlist before calling get_reserves
         let pools: Vec<Address> = env.storage().instance().get(&DataKey::ApprovedPools)
             .unwrap_or_else(|| Vec::new(&env));

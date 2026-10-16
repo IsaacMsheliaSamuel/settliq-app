@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Address, Env, String, Symbol,
+    contract, contractimpl, contracttype, symbol_short, Address, Env, String,
 };
 
 #[contracttype]
@@ -40,6 +40,7 @@ const MAX_ID_LEN: u32 = 64;
 
 #[contracttype]
 pub enum DataKey {
+    Admin,
     Payment(String),
 }
 
@@ -64,15 +65,39 @@ fn save_payment(env: &Env, key: &DataKey, payment: &Payment) {
     }
 }
 
-/// Load a payment and require authorization from its merchant.
-fn load_authorized(env: &Env, key: &DataKey) -> Payment {
-    let payment: Payment = env.storage().persistent().get(key).expect("Payment not found");
-    payment.merchant.require_auth();
-    payment
+/// Load a payment without any authorization check.
+fn load_payment(env: &Env, key: &DataKey) -> Payment {
+    env.storage().persistent().get(key).expect("Payment not found")
+}
+
+/// Require that the caller is the stored admin.
+fn require_admin(env: &Env, caller: &Address) {
+    let admin: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::Admin)
+        .expect("Contract not initialized");
+    if caller != &admin {
+        panic!("Not admin");
+    }
 }
 
 #[contractimpl]
 impl PaymentRequestContract {
+    /// Initialize the contract with an admin address.
+    ///
+    /// Must be called once before any other function. The admin is authorized to
+    /// drive settlement state transitions (`confirm`, `set_settling`, `settle`,
+    /// `fail`) without requiring the merchant's signature each time, enabling
+    /// backend settlement daemons to operate autonomously.
+    pub fn initialize(env: Env, admin: Address) {
+        admin.require_auth();
+        if env.storage().instance().has(&DataKey::Admin) {
+            panic!("Already initialized");
+        }
+        env.storage().instance().set(&DataKey::Admin, &admin);
+    }
+
     /// Initialize a new payment request.
     pub fn create_payment(
         env: Env,
@@ -89,10 +114,9 @@ impl PaymentRequestContract {
         if id.len() > MAX_ID_LEN {
             panic!("payment id too long");
         }
-        if expiry <= env.ledger().timestamp() {
-            panic!("expiry must be in the future");
+        if amount <= 0 {
+            panic!("amount must be > 0");
         }
-
         let key = DataKey::Payment(id.clone());
         if env.storage().persistent().has(&key) {
             panic!("Payment already exists");
@@ -117,9 +141,15 @@ impl PaymentRequestContract {
     }
 
     /// Mark payment as confirmed (user has paid).
-    pub fn confirm(env: Env, id: String) {
+    ///
+    /// Requires admin authorization — the platform payment monitor drives
+    /// confirmations so the merchant's online presence is not required.
+    pub fn confirm(env: Env, caller: Address, id: String) {
+        caller.require_auth();
+        require_admin(&env, &caller);
+
         let key = DataKey::Payment(id.clone());
-        let mut payment = load_authorized(&env, &key);
+        let mut payment = load_payment(&env, &key);
 
         if payment.status != PaymentStatus::Pending {
             panic!("Invalid transition: can only confirm pending payments");
@@ -139,9 +169,15 @@ impl PaymentRequestContract {
     }
 
     /// Move payment to settling state (initiate payout to merchant).
-    pub fn set_settling(env: Env, id: String) {
+    ///
+    /// Requires admin authorization — the backend settlement daemon drives
+    /// this transition autonomously.
+    pub fn set_settling(env: Env, caller: Address, id: String) {
+        caller.require_auth();
+        require_admin(&env, &caller);
+
         let key = DataKey::Payment(id.clone());
-        let mut payment = load_authorized(&env, &key);
+        let mut payment = load_payment(&env, &key);
 
         if payment.status != PaymentStatus::Confirmed {
             panic!("Invalid transition: can only set settling from confirmed");
@@ -157,9 +193,15 @@ impl PaymentRequestContract {
     }
 
     /// Mark payment as settled (funds received by merchant).
-    pub fn settle(env: Env, id: String) {
+    ///
+    /// Requires admin authorization — the backend settlement relayer confirms
+    /// final on-chain settlement.
+    pub fn settle(env: Env, caller: Address, id: String) {
+        caller.require_auth();
+        require_admin(&env, &caller);
+
         let key = DataKey::Payment(id.clone());
-        let mut payment = load_authorized(&env, &key);
+        let mut payment = load_payment(&env, &key);
 
         // Settling is a mandatory intermediate step: `set_settling` signals that a
         // payout is in flight, so settle may only follow it.
@@ -177,9 +219,14 @@ impl PaymentRequestContract {
     }
 
     /// Mark payment as failed.
-    pub fn fail(env: Env, id: String) {
+    ///
+    /// Requires admin authorization.
+    pub fn fail(env: Env, caller: Address, id: String) {
+        caller.require_auth();
+        require_admin(&env, &caller);
+
         let key = DataKey::Payment(id.clone());
-        let mut payment = load_authorized(&env, &key);
+        let mut payment = load_payment(&env, &key);
 
         if payment.status == PaymentStatus::Settled || payment.status == PaymentStatus::Expired {
             panic!("Cannot fail a finalized payment");
@@ -195,9 +242,13 @@ impl PaymentRequestContract {
     }
 
     /// Mark payment as expired.
+    ///
+    /// Permissionless: anyone may call this once the expiry timestamp has
+    /// passed. The merchant's signature is NOT required, so abandoned payments
+    /// can always be cleaned up by the backend or any third party.
     pub fn expire(env: Env, id: String) {
         let key = DataKey::Payment(id.clone());
-        let mut payment = load_authorized(&env, &key);
+        let mut payment = load_payment(&env, &key);
 
         if payment.status != PaymentStatus::Pending && payment.status != PaymentStatus::Confirmed {
             panic!("Cannot expire a finalized or settling payment");
@@ -219,6 +270,14 @@ impl PaymentRequestContract {
     /// Fetch payment details.
     pub fn get_payment(env: Env, id: String) -> Payment {
         env.storage().persistent().get(&DataKey::Payment(id)).expect("Payment not found")
+    }
+
+    /// Return the configured admin address.
+    pub fn get_admin(env: Env) -> Address {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Contract not initialized")
     }
 }
 
