@@ -15,6 +15,7 @@ struct Setup<'a> {
     lp: Address,
     caller: Address,
     token: TokenClient<'a>,
+    token_address: Address,
     client: FeeDistributorContractClient<'a>,
 }
 
@@ -27,11 +28,11 @@ fn setup(lp_share_bps: i128) -> Setup<'static> {
     let lp = Address::generate(&env);
     let caller = Address::generate(&env);
 
-    // Deploy a test token (Stellar Asset Contract)
+    // Deploy a test token (Stellar Asset Contract) — used as USDC stand-in.
     let token_admin = Address::generate(&env);
     let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
     let sac = StellarAssetClient::new(&env, &token_id.address());
-    // Mint 1_000_000 to caller so distribute() can pull from them
+    // Mint 1_000_000 to caller so distribute() can pull from them.
     sac.mint(&caller, &1_000_000);
 
     let contract_id = env.register(
@@ -41,14 +42,17 @@ fn setup(lp_share_bps: i128) -> Setup<'static> {
 
     let client = FeeDistributorContractClient::new(&env, &contract_id);
     let token = TokenClient::new(&env, &token_id.address());
+    let token_address = token_id.address();
 
-    Setup { env, admin, treasury, lp, caller, token, client }
+    Setup { env, admin, treasury, lp, caller, token, token_address, client }
 }
+
+// ─── Split-ratio tests (USDC, the default allowed token) ─────────────────────
 
 #[test]
 fn test_50_50_split() {
     let s = setup(5_000); // 50% LP
-    s.client.distribute(&s.caller, &10_000);
+    s.client.distribute(&s.caller, &s.token_address, &10_000);
     assert_eq!(s.token.balance(&s.treasury), 5_000);
     assert_eq!(s.token.balance(&s.lp), 5_000);
 }
@@ -56,7 +60,7 @@ fn test_50_50_split() {
 #[test]
 fn test_30_70_split() {
     let s = setup(3_000); // 30% LP, 70% treasury
-    s.client.distribute(&s.caller, &10_000);
+    s.client.distribute(&s.caller, &s.token_address, &10_000);
     assert_eq!(s.token.balance(&s.lp), 3_000);
     assert_eq!(s.token.balance(&s.treasury), 7_000);
 }
@@ -64,7 +68,7 @@ fn test_30_70_split() {
 #[test]
 fn test_zero_lp_share() {
     let s = setup(0); // 0% LP — all goes to treasury
-    s.client.distribute(&s.caller, &10_000);
+    s.client.distribute(&s.caller, &s.token_address, &10_000);
     assert_eq!(s.token.balance(&s.treasury), 10_000);
     assert_eq!(s.token.balance(&s.lp), 0);
 }
@@ -72,7 +76,7 @@ fn test_zero_lp_share() {
 #[test]
 fn test_hundred_percent_lp() {
     let s = setup(10_000); // 100% LP — nothing to treasury
-    s.client.distribute(&s.caller, &10_000);
+    s.client.distribute(&s.caller, &s.token_address, &10_000);
     assert_eq!(s.token.balance(&s.lp), 10_000);
     assert_eq!(s.token.balance(&s.treasury), 0);
 }
@@ -80,11 +84,154 @@ fn test_hundred_percent_lp() {
 #[test]
 fn test_rounding_remainder_goes_to_treasury() {
     let s = setup(3_333); // 33.33% LP
-    s.client.distribute(&s.caller, &10);
+    s.client.distribute(&s.caller, &s.token_address, &10);
     // lp = 10 * 3333 / 10000 = 3 (truncated), treasury = 7
     assert_eq!(s.token.balance(&s.lp), 3);
     assert_eq!(s.token.balance(&s.treasury), 7);
 }
+
+// ─── Multi-token distribution (XLM and USDC) ─────────────────────────────────
+
+/// Distribute fees denominated in a second token (XLM stand-in) after
+/// registering it via `add_allowed_token`. Verifies that treasury and LP
+/// receive the correct amounts in the XLM token — not the initially configured
+/// USDC token — demonstrating fix for issue #63.
+#[test]
+fn test_distribute_xlm_fees() {
+    let s = setup(5_000); // 50 / 50 split
+
+    // Deploy a second asset to act as native XLM.
+    let xlm_admin = Address::generate(&s.env);
+    let xlm_id = s.env.register_stellar_asset_contract_v2(xlm_admin.clone());
+    let xlm_sac = StellarAssetClient::new(&s.env, &xlm_id.address());
+    // Mint XLM to the caller so distribute() can pull from them.
+    xlm_sac.mint(&s.caller, &1_000_000);
+
+    let xlm_token = TokenClient::new(&s.env, &xlm_id.address());
+
+    // Allow the XLM token.
+    s.client.add_allowed_token(&s.admin, &xlm_id.address());
+
+    // Distribute XLM fees.
+    s.client.distribute(&s.caller, &xlm_id.address(), &10_000);
+
+    // Correct XLM balances.
+    assert_eq!(xlm_token.balance(&s.treasury), 5_000);
+    assert_eq!(xlm_token.balance(&s.lp), 5_000);
+
+    // USDC balances are untouched.
+    assert_eq!(s.token.balance(&s.treasury), 0);
+    assert_eq!(s.token.balance(&s.lp), 0);
+}
+
+/// Distribute USDC fees first, then XLM fees in a subsequent call.
+/// Both distributions should succeed and balances for each token should be
+/// tracked independently.
+#[test]
+fn test_distribute_both_usdc_and_xlm() {
+    let s = setup(5_000); // 50 / 50
+
+    // Deploy XLM stand-in.
+    let xlm_admin = Address::generate(&s.env);
+    let xlm_id = s.env.register_stellar_asset_contract_v2(xlm_admin.clone());
+    let xlm_sac = StellarAssetClient::new(&s.env, &xlm_id.address());
+    xlm_sac.mint(&s.caller, &1_000_000);
+
+    let xlm_token = TokenClient::new(&s.env, &xlm_id.address());
+
+    // Register XLM as an allowed fee asset.
+    s.client.add_allowed_token(&s.admin, &xlm_id.address());
+
+    // First distribution: USDC.
+    s.client.distribute(&s.caller, &s.token_address, &10_000);
+
+    // Second distribution: XLM.
+    s.client.distribute(&s.caller, &xlm_id.address(), &20_000);
+
+    // USDC balances.
+    assert_eq!(s.token.balance(&s.treasury), 5_000);
+    assert_eq!(s.token.balance(&s.lp), 5_000);
+
+    // XLM balances.
+    assert_eq!(xlm_token.balance(&s.treasury), 10_000);
+    assert_eq!(xlm_token.balance(&s.lp), 10_000);
+}
+
+/// `distribute` rejects a token address that has not been added to the
+/// allowlist, even if the caller holds that token.
+#[test]
+#[should_panic(expected = "token not allowed")]
+fn test_distribute_rejects_unapproved_token() {
+    let s = setup(5_000);
+
+    // Deploy a random unknown token.
+    let unknown_admin = Address::generate(&s.env);
+    let unknown_id = s.env.register_stellar_asset_contract_v2(unknown_admin.clone());
+    let unknown_sac = StellarAssetClient::new(&s.env, &unknown_id.address());
+    unknown_sac.mint(&s.caller, &10_000);
+
+    // Attempt to distribute without adding to the allowlist — should panic.
+    s.client.distribute(&s.caller, &unknown_id.address(), &10_000);
+}
+
+/// After adding and then removing a token, distribution for that token should
+/// be rejected again.
+#[test]
+#[should_panic(expected = "token not allowed")]
+fn test_distribute_rejects_removed_token() {
+    let s = setup(5_000);
+
+    let xlm_admin = Address::generate(&s.env);
+    let xlm_id = s.env.register_stellar_asset_contract_v2(xlm_admin.clone());
+    let xlm_sac = StellarAssetClient::new(&s.env, &xlm_id.address());
+    xlm_sac.mint(&s.caller, &10_000);
+
+    // Add then remove.
+    s.client.add_allowed_token(&s.admin, &xlm_id.address());
+    s.client.remove_allowed_token(&s.admin, &xlm_id.address());
+
+    // Distribution should now fail.
+    s.client.distribute(&s.caller, &xlm_id.address(), &10_000);
+}
+
+/// `get_allowed_tokens` returns the USDC address seeded in the constructor.
+#[test]
+fn test_get_allowed_tokens_contains_usdc_at_init() {
+    let s = setup(5_000);
+    let tokens = s.client.get_allowed_tokens();
+    assert_eq!(tokens.len(), 1);
+    assert_eq!(tokens.get(0).unwrap(), s.token_address);
+}
+
+/// `get_allowed_tokens` reflects additions.
+#[test]
+fn test_get_allowed_tokens_reflects_additions() {
+    let s = setup(5_000);
+
+    let xlm_admin = Address::generate(&s.env);
+    let xlm_id = s.env.register_stellar_asset_contract_v2(xlm_admin.clone());
+
+    s.client.add_allowed_token(&s.admin, &xlm_id.address());
+
+    let tokens = s.client.get_allowed_tokens();
+    assert_eq!(tokens.len(), 2);
+    assert!(tokens.contains(&xlm_id.address()));
+}
+
+/// `fee_distributed` event includes the token address used for the transfer.
+#[test]
+fn test_distribute_event_includes_token_address() {
+    let s = setup(5_000);
+    s.client.distribute(&s.caller, &s.token_address, &10_000);
+    let events = s.env.events().all();
+    let last = events.last().unwrap();
+    let event: crate::FeeDistributedEvent = last.2.into_val(&s.env);
+    assert_eq!(event.token, s.token_address);
+    assert_eq!(event.treasury_amount, 5_000);
+    assert_eq!(event.lp_amount, 5_000);
+}
+
+// ─── Config / admin update tests ─────────────────────────────────────────────
 
 #[test]
 fn test_update_lp_share() {
@@ -92,7 +239,7 @@ fn test_update_lp_share() {
     s.client.set_lp_share(&s.admin, &2_000);
     let (_, _, bps) = s.client.get_config();
     assert_eq!(bps, 2_000);
-    s.client.distribute(&s.caller, &10_000);
+    s.client.distribute(&s.caller, &s.token_address, &10_000);
     assert_eq!(s.token.balance(&s.lp), 2_000);
     assert_eq!(s.token.balance(&s.treasury), 8_000);
 }
@@ -104,7 +251,7 @@ fn test_update_addresses() {
     let new_lp = Address::generate(&s.env);
     s.client.set_treasury(&s.admin, &new_treasury);
     s.client.set_lp_address(&s.admin, &new_lp);
-    s.client.distribute(&s.caller, &10_000);
+    s.client.distribute(&s.caller, &s.token_address, &10_000);
     assert_eq!(s.token.balance(&new_treasury), 5_000);
     assert_eq!(s.token.balance(&new_lp), 5_000);
     // old addresses untouched
@@ -133,7 +280,7 @@ fn test_distribute_from_unrelated_caller_rejected() {
     sac.mint(&unrelated, &10_000);
 
     // Unrelated caller is rejected by caller allowlist check
-    s.client.distribute(&unrelated, &10_000);
+    s.client.distribute(&unrelated, &s.token_address, &10_000);
 }
 
 #[test]
@@ -258,7 +405,7 @@ fn test_unauthorized_caller_rejected() {
     let stranger = Address::generate(&s.env);
     let sac = StellarAssetClient::new(&s.env, &s.token.address);
     sac.mint(&stranger, &10_000);
-    let res = s.client.try_distribute(&stranger, &10_000);
+    let res = s.client.try_distribute(&stranger, &s.token_address, &10_000);
     assert!(res.is_err());
     assert_eq!(s.token.balance(&s.treasury), 0);
     assert_eq!(s.token.balance(&s.lp), 0);
@@ -272,18 +419,18 @@ fn test_rotate_allowed_caller() {
     sac.mint(&new_caller, &10_000);
 
     // Old caller works before rotation
-    s.client.distribute(&s.caller, &10_000);
+    s.client.distribute(&s.caller, &s.token_address, &10_000);
     assert_eq!(s.token.balance(&s.treasury), 5_000);
 
     // Rotate to new caller
     s.client.set_allowed_caller(&s.admin, &new_caller);
 
     // Old caller now rejected
-    let res = s.client.try_distribute(&s.caller, &10_000);
+    let res = s.client.try_distribute(&s.caller, &s.token_address, &10_000);
     assert!(res.is_err());
 
     // New caller works
-    s.client.distribute(&new_caller, &10_000);
+    s.client.distribute(&new_caller, &s.token_address, &10_000);
     assert_eq!(s.token.balance(&s.treasury), 10_000);
     assert_eq!(s.token.balance(&s.lp), 10_000);
 }
