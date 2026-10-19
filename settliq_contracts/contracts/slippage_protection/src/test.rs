@@ -210,3 +210,57 @@ fn test_pair_override_does_not_affect_other_pairs() {
     // Pair (A, C) must still use the global default (100 bps).
     assert_eq!(client.get_pair_max_slippage(&token_a, &token_c), 100);
 }
+
+// ── assert_within_tolerance: actual <= 0 guard tests (issue #65) ─────────────
+
+/// check_slippage must revert immediately when actual == 0, regardless of
+/// how small the expected amount is. A zero output from an AMM is always an
+/// invalid trade result and must never pass a slippage check.
+#[test]
+#[should_panic(expected = "actual must be > 0")]
+fn test_check_slippage_zero_actual_reverts() {
+    let (_env, client, _admin) = setup_env();
+    client.check_slippage(&10_000, &0);
+}
+
+/// check_slippage must revert when actual is negative. A negative output
+/// would produce a diff larger than expected, which could either overflow or
+/// silently produce a deceptively small deviation value.
+#[test]
+#[should_panic(expected = "actual must be > 0")]
+fn test_check_slippage_negative_actual_reverts() {
+    let (_env, client, _admin) = setup_env();
+    client.check_slippage(&10_000, &-10);
+}
+
+/// check_slippage_for_pair must also revert when actual == 0, because both
+/// code paths funnel through assert_within_tolerance.
+#[test]
+#[should_panic(expected = "actual must be > 0")]
+fn test_check_slippage_for_pair_zero_actual_reverts() {
+    let (env, client, admin) = setup_env();
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    client.set_pair_max_slippage(&admin, &token_a, &token_b, &200);
+    client.check_slippage_for_pair(&token_a, &token_b, &10_000, &0);
+}
+
+/// check_slippage_for_pair must also revert when actual is negative.
+#[test]
+#[should_panic(expected = "actual must be > 0")]
+fn test_check_slippage_for_pair_negative_actual_reverts() {
+    let (env, client, admin) = setup_env();
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    client.set_pair_max_slippage(&admin, &token_a, &token_b, &200);
+    client.check_slippage_for_pair(&token_a, &token_b, &10_000, &-10);
+}
+
+/// Positive actual within tolerance continues to pass normally after the
+/// guard is in place — the fix must not break the happy path.
+#[test]
+fn test_check_slippage_positive_actual_within_tolerance_passes() {
+    let (_env, client, _admin) = setup_env();
+    // 0.5% deviation, well within the 1% (100 bps) default.
+    client.check_slippage(&10_000, &9_950);
+}
