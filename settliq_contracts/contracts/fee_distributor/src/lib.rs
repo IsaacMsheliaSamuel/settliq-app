@@ -181,6 +181,13 @@ impl FeeDistributorContract {
     }
 
     /// Rotate the admin address. Admin-only.
+    ///
+    /// Enforces the same separation-of-duties invariants as the constructor:
+    /// - `new_admin` must not be the contract address itself.
+    /// - `new_admin` must not equal the current treasury address.
+    /// - `new_admin` must not equal the current LP address.
+    /// - `new_admin` must differ from the current (old) admin.
+    ///
     /// Persists `new_admin` to `DataKey::Admin` so subsequent `require_admin`
     /// checks (set_lp_share, set_treasury, set_lp_address, set_allowed_caller,
     /// and future rotations) use the rotated key.
@@ -188,6 +195,17 @@ impl FeeDistributorContract {
         caller.require_auth();
         Self::require_admin(&env, &caller);
         let old_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        let treasury: Address = env.storage().instance().get(&DataKey::Treasury).unwrap();
+        let lp_address: Address = env.storage().instance().get(&DataKey::LpAddress).unwrap();
+
+        assert!(
+            new_admin != env.current_contract_address(),
+            "new_admin must not be the contract address"
+        );
+        assert!(new_admin != old_admin, "new_admin must differ from current admin");
+        assert!(new_admin != treasury, "new_admin must not be the treasury address");
+        assert!(new_admin != lp_address, "new_admin must not be the lp_address");
+
         env.storage().instance().set(&DataKey::Admin, &new_admin);
         env.events().publish(
             ("FEE_DISTRIBUTOR", "admin_updated"),

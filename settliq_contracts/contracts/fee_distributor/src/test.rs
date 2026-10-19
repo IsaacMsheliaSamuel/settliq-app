@@ -320,3 +320,76 @@ fn test_transfer_admin_rejects_non_admin() {
     let (_, _, bps) = s.client.get_config();
     assert_eq!(bps, 2_000);
 }
+
+// ─── transfer_admin invariant-check tests (issue #64) ────────────────────────
+
+/// transfer_admin must reject new_admin == current admin (no-op rotation).
+#[test]
+#[should_panic(expected = "new_admin must differ from current admin")]
+fn test_transfer_admin_rejects_same_admin() {
+    let s = setup(5_000);
+    // Attempt to rotate to the same address already stored as admin.
+    s.client.transfer_admin(&s.admin, &s.admin);
+}
+
+/// transfer_admin must reject new_admin == treasury to prevent a single
+/// address controlling both admin and treasury roles.
+#[test]
+#[should_panic(expected = "new_admin must not be the treasury address")]
+fn test_transfer_admin_rejects_treasury_as_new_admin() {
+    let s = setup(5_000);
+    s.client.transfer_admin(&s.admin, &s.treasury);
+}
+
+/// transfer_admin must reject new_admin == lp_address to prevent a single
+/// address controlling both admin and LP roles.
+#[test]
+#[should_panic(expected = "new_admin must not be the lp_address")]
+fn test_transfer_admin_rejects_lp_as_new_admin() {
+    let s = setup(5_000);
+    s.client.transfer_admin(&s.admin, &s.lp);
+}
+
+/// transfer_admin must reject new_admin == contract address.
+#[test]
+#[should_panic(expected = "new_admin must not be the contract address")]
+fn test_transfer_admin_rejects_contract_address_as_new_admin() {
+    let s = setup(5_000);
+    // Retrieve the deployed contract's own address.
+    let contract_address = s.client.address.clone();
+    s.client.transfer_admin(&s.admin, &contract_address);
+}
+
+/// A valid rotation to a fresh address succeeds, emits AdminUpdatedEvent with
+/// correct old/new values, and the old admin is revoked.
+#[test]
+fn test_transfer_admin_valid_rotation_succeeds_and_emits_event() {
+    let s = setup(5_000);
+    let new_admin = Address::generate(&s.env);
+
+    s.client.transfer_admin(&s.admin, &new_admin);
+
+    // Event carries correct old and new admin addresses.
+    let events = s.env.events().all();
+    let last = events.last().unwrap();
+    assert_eq!(
+        last.1,
+        (
+            soroban_sdk::String::from_str(&s.env, "FEE_DISTRIBUTOR"),
+            soroban_sdk::String::from_str(&s.env, "admin_updated")
+        )
+            .into_val(&s.env)
+    );
+    let event: crate::AdminUpdatedEvent = last.2.into_val(&s.env);
+    assert_eq!(event.old_admin, s.admin);
+    assert_eq!(event.new_admin, new_admin);
+
+    // Old admin is revoked.
+    let res = s.client.try_set_lp_share(&s.admin, &1_000);
+    assert!(res.is_err());
+
+    // New admin can act.
+    s.client.set_lp_share(&new_admin, &1_000);
+    let (_, _, bps) = s.client.get_config();
+    assert_eq!(bps, 1_000);
+}
