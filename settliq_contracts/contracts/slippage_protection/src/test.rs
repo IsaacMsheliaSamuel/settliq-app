@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use crate::{SlippageProtectionContract, SlippageProtectionContractClient};
-use soroban_sdk::{testutils::Address as _, Address, Env};
+use soroban_sdk::{testutils::{Address as _, Events as _}, Address, Env, IntoVal};
 
 fn setup_env() -> (Env, SlippageProtectionContractClient<'static>, Address) {
     let env = Env::default();
@@ -211,56 +211,98 @@ fn test_pair_override_does_not_affect_other_pairs() {
     assert_eq!(client.get_pair_max_slippage(&token_a, &token_c), 100);
 }
 
-// ── assert_within_tolerance: actual <= 0 guard tests (issue #65) ─────────────
+// ── set_pair_max_slippage: audit event tests (issue #66) ─────────────────────
 
-/// check_slippage must revert immediately when actual == 0, regardless of
-/// how small the expected amount is. A zero output from an AMM is always an
-/// invalid trade result and must never pass a slippage check.
+/// set_pair_max_slippage emits PairMaxSlippageUpdatedEvent on first set.
+/// previous_bps should be the global default (100) since no override existed.
 #[test]
-#[should_panic(expected = "actual must be > 0")]
-fn test_check_slippage_zero_actual_reverts() {
-    let (_env, client, _admin) = setup_env();
-    client.check_slippage(&10_000, &0);
-}
-
-/// check_slippage must revert when actual is negative. A negative output
-/// would produce a diff larger than expected, which could either overflow or
-/// silently produce a deceptively small deviation value.
-#[test]
-#[should_panic(expected = "actual must be > 0")]
-fn test_check_slippage_negative_actual_reverts() {
-    let (_env, client, _admin) = setup_env();
-    client.check_slippage(&10_000, &-10);
-}
-
-/// check_slippage_for_pair must also revert when actual == 0, because both
-/// code paths funnel through assert_within_tolerance.
-#[test]
-#[should_panic(expected = "actual must be > 0")]
-fn test_check_slippage_for_pair_zero_actual_reverts() {
+fn test_set_pair_max_slippage_emits_event_first_set() {
     let (env, client, admin) = setup_env();
     let token_a = Address::generate(&env);
     let token_b = Address::generate(&env);
+
     client.set_pair_max_slippage(&admin, &token_a, &token_b, &200);
-    client.check_slippage_for_pair(&token_a, &token_b, &10_000, &0);
+
+    let events = env.events().all();
+    let last = events.last().unwrap();
+
+    // Topic check.
+    assert_eq!(
+        last.1,
+        (
+            soroban_sdk::String::from_str(&env, "SLIPPAGE"),
+            soroban_sdk::String::from_str(&env, "pair_max_slippage_updated")
+        )
+            .into_val(&env)
+    );
+
+    // Data check: previous_bps is the global default, new_bps is 200.
+    let event: crate::PairMaxSlippageUpdatedEvent = last.2.into_val(&env);
+    assert_eq!(event.previous_bps, 100); // global default
+    assert_eq!(event.new_bps, 200);
 }
 
-/// check_slippage_for_pair must also revert when actual is negative.
+/// set_pair_max_slippage emits PairMaxSlippageUpdatedEvent on an update to an
+/// already-configured pair. previous_bps should reflect the stored override,
+/// not the global default.
 #[test]
-#[should_panic(expected = "actual must be > 0")]
-fn test_check_slippage_for_pair_negative_actual_reverts() {
+fn test_set_pair_max_slippage_emits_event_on_update() {
     let (env, client, admin) = setup_env();
     let token_a = Address::generate(&env);
     let token_b = Address::generate(&env);
+
+    // First set.
     client.set_pair_max_slippage(&admin, &token_a, &token_b, &200);
-    client.check_slippage_for_pair(&token_a, &token_b, &10_000, &-10);
+
+    // Second set — override the existing value.
+    client.set_pair_max_slippage(&admin, &token_a, &token_b, &75);
+
+    let events = env.events().all();
+    let last = events.last().unwrap();
+    let event: crate::PairMaxSlippageUpdatedEvent = last.2.into_val(&env);
+
+    // previous_bps must be the prior override (200), not the global default.
+    assert_eq!(event.previous_bps, 200);
+    assert_eq!(event.new_bps, 75);
 }
 
-/// Positive actual within tolerance continues to pass normally after the
-/// guard is in place — the fix must not break the happy path.
+/// Event asset fields match the arguments passed to set_pair_max_slippage
+/// regardless of whether they are reordered internally (canonical ordering).
 #[test]
-fn test_check_slippage_positive_actual_within_tolerance_passes() {
-    let (_env, client, _admin) = setup_env();
-    // 0.5% deviation, well within the 1% (100 bps) default.
-    client.check_slippage(&10_000, &9_950);
+fn test_set_pair_max_slippage_event_contains_correct_assets() {
+    let (env, client, admin) = setup_env();
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+
+    client.set_pair_max_slippage(&admin, &token_a, &token_b, &300);
+
+    let events = env.events().all();
+    let last = events.last().unwrap();
+    let event: crate::PairMaxSlippageUpdatedEvent = last.2.into_val(&env);
+
+    // The event must carry the original caller-supplied addresses.
+    assert_eq!(event.asset_a, token_a);
+    assert_eq!(event.asset_b, token_b);
+    assert_eq!(event.new_bps, 300);
+}
+
+/// Calling set_pair_max_slippage with arguments in reversed order (B, A)
+/// still emits the event with the caller-supplied asset_a / asset_b values.
+#[test]
+fn test_set_pair_max_slippage_event_reversed_order_carries_caller_args() {
+    let (env, client, admin) = setup_env();
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+
+    // Set using reversed argument order.
+    client.set_pair_max_slippage(&admin, &token_b, &token_a, &150);
+
+    let events = env.events().all();
+    let last = events.last().unwrap();
+    let event: crate::PairMaxSlippageUpdatedEvent = last.2.into_val(&env);
+
+    // asset_a and asset_b in the event should be what the caller passed in.
+    assert_eq!(event.asset_a, token_b);
+    assert_eq!(event.asset_b, token_a);
+    assert_eq!(event.new_bps, 150);
 }

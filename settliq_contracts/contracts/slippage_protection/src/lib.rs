@@ -27,6 +27,14 @@ struct MaxSlippageUpdatedEvent {
     new_bps: u32,
 }
 
+#[contracttype]
+pub struct PairMaxSlippageUpdatedEvent {
+    pub asset_a: Address,
+    pub asset_b: Address,
+    pub previous_bps: u32,
+    pub new_bps: u32,
+}
+
 #[contract]
 pub struct SlippageProtectionContract;
 
@@ -86,6 +94,11 @@ impl SlippageProtectionContract {
     /// basis points. The pair is unordered: setting slippage for (A, B) is
     /// identical to setting it for (B, A), and lookups always resolve to the
     /// same entry regardless of argument order.
+    ///
+    /// Emits a `PairMaxSlippageUpdatedEvent` on topic
+    /// `("SLIPPAGE", "pair_max_slippage_updated")` containing the asset pair
+    /// and the previous and new bps values, enabling off-chain indexers and
+    /// monitoring tools to audit every per-pair override change.
     pub fn set_pair_max_slippage(
         env: Env,
         caller: soroban_sdk::Address,
@@ -95,10 +108,29 @@ impl SlippageProtectionContract {
     ) {
         caller.require_auth();
         Self::require_admin(&env, &caller);
-        let (k1, k2) = Self::canonical_pair(&env, asset_a, asset_b);
+        let (k1, k2) = Self::canonical_pair(&env, asset_a.clone(), asset_b.clone());
+
+        // Read the previous value (falls back to global default when no
+        // override has been stored yet) so the event carries an accurate diff.
+        let previous_bps: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PairMaxSlippageBps(k1.clone(), k2.clone()))
+            .unwrap_or_else(|| Self::global_max_slippage(&env));
+
         env.storage()
             .instance()
             .set(&DataKey::PairMaxSlippageBps(k1, k2), &bps);
+
+        env.events().publish(
+            ("SLIPPAGE", "pair_max_slippage_updated"),
+            PairMaxSlippageUpdatedEvent {
+                asset_a,
+                asset_b,
+                previous_bps,
+                new_bps: bps,
+            },
+        );
     }
 
     pub fn get_max_slippage(env: Env) -> u32 {

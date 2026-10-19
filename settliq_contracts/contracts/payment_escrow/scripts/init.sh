@@ -2,7 +2,6 @@
 set -euo pipefail
 
 NETWORK="${NETWORK:-testnet}"
-INIT_FN="${INIT_FN:-init}"
 CONTRACT_ID="${CONTRACT_ID:-${ESCROW_CONTRACT_ID:-}}"
 
 case "$NETWORK" in
@@ -30,8 +29,16 @@ if [[ -z "${STELLAR_SOURCE_ACCOUNT_SECRET:-}" ]]; then
   exit 1
 fi
 
-if [[ -z "${ESCROW_ADMIN:-}" || -z "${ESCROW_USDC_TOKEN:-}" || -z "${ESCROW_DEFAULT_TTL_LEDGERS:-}" ]]; then
-  echo "Missing one or more required init args: ESCROW_ADMIN, ESCROW_USDC_TOKEN, ESCROW_DEFAULT_TTL_LEDGERS." >&2
+# PaymentEscrowContract.__constructor requires 8 arguments (#89)
+if [[ -z "${ESCROW_ADMIN:-}" || -z "${ESCROW_XLM_TOKEN:-}" || -z "${ESCROW_USDC_TOKEN:-}" || \
+      -z "${ESCROW_DEFAULT_TTL_LEDGERS:-}" || -z "${ESCROW_REGISTRY:-}" || \
+      -z "${ESCROW_EMERGENCY_SIGNERS:-}" || -z "${ESCROW_EMERGENCY_TREASURY:-}" || \
+      -z "${ESCROW_EMERGENCY_COOLDOWN_LEDGERS:-}" ]]; then
+  echo "Missing one or more required constructor args:" >&2
+  echo "  ESCROW_ADMIN, ESCROW_XLM_TOKEN, ESCROW_USDC_TOKEN," >&2
+  echo "  ESCROW_DEFAULT_TTL_LEDGERS, ESCROW_REGISTRY," >&2
+  echo "  ESCROW_EMERGENCY_SIGNERS, ESCROW_EMERGENCY_TREASURY," >&2
+  echo "  ESCROW_EMERGENCY_COOLDOWN_LEDGERS" >&2
   exit 1
 fi
 
@@ -41,16 +48,17 @@ INIT_CMD=(
   --source-account "${STELLAR_SOURCE_ACCOUNT_SECRET}"
   --rpc-url "${RPC_URL}"
   --network-passphrase "${NETWORK_PASSPHRASE}"
-  --fn "${INIT_FN}"
+  --fn "__constructor"
   --admin "${ESCROW_ADMIN}"
+  --xlm_token "${ESCROW_XLM_TOKEN}"
   --usdc_token "${ESCROW_USDC_TOKEN}"
   --default_ttl_ledgers "${ESCROW_DEFAULT_TTL_LEDGERS}"
+  --registry "${ESCROW_REGISTRY}"
+  --emergency_signers "${ESCROW_EMERGENCY_SIGNERS}"
+  --emergency_treasury "${ESCROW_EMERGENCY_TREASURY}"
+  --emergency_cooldown_ledgers "${ESCROW_EMERGENCY_COOLDOWN_LEDGERS}"
 )
 
-if [[ -n "${ESCROW_REGISTRY_CONTRACT:-}" ]]; then
-  INIT_CMD+=(--registry "${ESCROW_REGISTRY_CONTRACT}")
-fi
-
-echo "Initializing escrow contract ${CONTRACT_ID} on ${NETWORK} (fn=${INIT_FN})..."
+echo "Initializing escrow contract ${CONTRACT_ID} on ${NETWORK} (__constructor)..."
 "${INIT_CMD[@]}"
 echo "Initialization complete."

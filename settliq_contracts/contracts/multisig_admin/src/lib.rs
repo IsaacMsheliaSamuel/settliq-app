@@ -201,6 +201,34 @@ impl MultisigAdminContract {
         env.storage().persistent().set(&key, &proposal);
     }
 
+    /// Reject a proposal to prevent it from being executed. Admin only. (#91)
+    /// Once rejected, a proposal cannot be approved or executed.
+    pub fn reject_proposal(env: Env, caller: Address, proposal_id: u64) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+
+        let key = DataKey::Proposal(proposal_id);
+        let mut proposal: Proposal = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .expect("proposal not found");
+
+        if proposal.executed {
+            panic!("proposal already executed");
+        }
+        if proposal.rejected {
+            panic!("proposal already rejected");
+        }
+
+        proposal.rejected = true;
+        env.events().publish(
+            ("MULTISIG", "proposal_rejected"),
+            ProposalRejectedEvent { proposal_id },
+        );
+        env.storage().persistent().set(&key, &proposal);
+    }
+
     /// Removes an expired, never-executed proposal from persistent storage.
     ///
     /// Permissionless: expiry is objectively checkable on-chain via
