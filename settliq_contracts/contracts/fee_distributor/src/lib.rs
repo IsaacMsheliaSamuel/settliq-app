@@ -262,6 +262,17 @@ impl FeeDistributorContract {
         caller.require_auth();
         Self::require_admin(&env, &caller);
         let old_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        let treasury: Address = env.storage().instance().get(&DataKey::Treasury).unwrap();
+        let lp_address: Address = env.storage().instance().get(&DataKey::LpAddress).unwrap();
+
+        assert!(
+            new_admin != env.current_contract_address(),
+            "new_admin must not be the contract address"
+        );
+        assert!(new_admin != old_admin, "new_admin must differ from current admin");
+        assert!(new_admin != treasury, "new_admin must not be the treasury address");
+        assert!(new_admin != lp_address, "new_admin must not be the lp_address");
+
         env.storage().instance().set(&DataKey::Admin, &new_admin);
         env.events().publish(
             ("FEE_DISTRIBUTOR", "admin_updated"),
